@@ -1,0 +1,30 @@
+﻿# Python
+__pycache__/
+*.pyc
+.venv/
+venv/
+*.egg-info/
+
+# Env & secrets
+.env
+.env.*
+!.env.example
+
+# Uploaded/generated content
+storage/uploads/*
+storage/frames/*
+storage/rendered_pages/*
+!storage/uploads/.gitkeep
+!storage/frames/.gitkeep
+!storage/rendered_pages/.gitkeep
+
+# Docker
+qdrant_data/
+
+# IDE
+.vscode/
+.idea/
+
+# OS
+Thumbs.db
+.DS_Store

@@ -20,6 +20,7 @@ storage/rendered_pages/*
 
 # Docker
 qdrant_data/
+n8n_data/
 
 # IDE
 .vscode/

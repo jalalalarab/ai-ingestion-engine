@@ -1,10 +1,12 @@
 """
 AI Ingestion Engine — FastAPI application entry point.
 
-Phase 0: only a /health route so we can verify the app runs and is reachable.
-More routes get added in later phases (ingest, search, ask).
+Registers all API routers. Health check lives here; other endpoints live in api/.
 """
 from fastapi import FastAPI
+
+from app.api.routes_ingest import router as ingest_router
+
 
 app = FastAPI(
     title="AI Ingestion Engine",
@@ -13,7 +15,11 @@ app = FastAPI(
 )
 
 
-@app.get("/health")
+@app.get("/health", tags=["health"])
 def health():
     """Liveness check. Returns ok if the app is running."""
     return {"status": "ok"}
+
+
+# Register routers
+app.include_router(ingest_router)

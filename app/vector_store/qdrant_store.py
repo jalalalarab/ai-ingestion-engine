@@ -16,6 +16,7 @@ from qdrant_client.models import (
     Filter,
     FieldCondition,
     MatchValue,
+    ScoredPoint,
 )
 from app.config import settings
 
@@ -132,3 +133,52 @@ def delete_by_file_id(file_id: str) -> None:
             must=[FieldCondition(key="file_id", match=MatchValue(value=file_id))]
         ),
     )
+def search(
+    query_vector: list[float],
+    top_k: int = 5,
+    file_id: str | None = None,
+    source_type: str | None = None,
+) -> list[dict]:
+    """
+    Semantic search — find the top_k most similar chunks to the query vector.
+
+    Optional filters:
+        file_id: restrict search to a specific file.
+        source_type: restrict to 'pdf' or 'video'.
+
+    Returns:
+        A list of dicts, each with score + payload fields.
+        Ordered by descending similarity (best match first).
+    """
+    client = get_client()
+
+    # Build Qdrant filter only if the caller asked for one.
+    conditions = []
+    if file_id is not None:
+        conditions.append(FieldCondition(key="file_id", match=MatchValue(value=file_id)))
+    if source_type is not None:
+        conditions.append(FieldCondition(key="source_type", match=MatchValue(value=source_type)))
+    q_filter = Filter(must=conditions) if conditions else None
+
+    result = client.query_points(
+        collection_name=settings.QDRANT_COLLECTION,
+        query=query_vector,
+        limit=top_k,
+        query_filter=q_filter,
+        with_payload=True,
+    )
+    hits = result.points
+
+    # Convert Qdrant's ScoredPoint objects to plain dicts for the API layer.
+    return [
+        {
+            "score": float(hit.score),
+            "text": hit.payload.get("text", ""),
+            "file_id": hit.payload.get("file_id"),
+            "file_name": hit.payload.get("file_name"),
+            "source_type": hit.payload.get("source_type"),
+            "page_number": hit.payload.get("page_number"),
+            "chunk_index": hit.payload.get("chunk_index"),
+        }
+        for hit in hits
+    ]

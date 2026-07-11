@@ -26,6 +26,7 @@ class IngestionReport:
     source_type: str
     pages_processed: int
     chunks_created: int
+    ocr_pages_count: int
 
 
 def ingest_pdf(pdf_bytes: bytes, file_name: str) -> IngestionReport:
@@ -45,10 +46,16 @@ def ingest_pdf(pdf_bytes: bytes, file_name: str) -> IngestionReport:
     # Step 1: extract pages
     pages = extract_pdf_pages(pdf_bytes)
 
-    # Step 2: chunk each page, tagging every chunk with its origin page number
+    # Count how many pages required OCR fallback — useful signal for the report
+    # and for spotting scanned documents in the audit trail.
+    ocr_pages_count = sum(1 for _, _, method in pages if method == "ocr")
+
+    # Step 2: chunk each page, tagging every chunk with its origin page number.
+    # The `method` is captured above but not yet threaded into chunk payloads —
+    # that upgrade is planned as a follow-up (extraction_method on every chunk).
     all_chunks: list[str] = []
     all_page_numbers: list[int | None] = []
-    for page_number, page_text in pages:
+    for page_number, page_text, _method in pages:
         for chunk in chunk_text(page_text):
             all_chunks.append(chunk)
             all_page_numbers.append(page_number)
@@ -61,6 +68,7 @@ def ingest_pdf(pdf_bytes: bytes, file_name: str) -> IngestionReport:
             source_type="pdf",
             pages_processed=len(pages),
             chunks_created=0,
+            ocr_pages_count=ocr_pages_count,
         )
 
     # Step 3 + 4: embed and upsert (shared with video in Phase 5)
@@ -78,6 +86,7 @@ def ingest_pdf(pdf_bytes: bytes, file_name: str) -> IngestionReport:
         source_type="pdf",
         pages_processed=len(pages),
         chunks_created=n,
+        ocr_pages_count=ocr_pages_count,
     )
 
 

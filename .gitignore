@@ -17,6 +17,8 @@ storage/rendered_pages/*
 !storage/uploads/.gitkeep
 !storage/frames/.gitkeep
 !storage/rendered_pages/.gitkeep
+# Test scratch files
+tests/_*.json
 
 # Docker
 qdrant_data/

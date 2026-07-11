@@ -43,6 +43,9 @@ class Settings:
     # LLM
     LLM_MODEL: str = _require("LLM_MODEL")
     LLM_TIMEOUT_SECONDS: int = int(os.getenv("LLM_TIMEOUT_SECONDS", "120"))
+    
+    # OCR (Windows needs an explicit tesseract.exe path; on Linux/Mac PATH usually finds it)
+    TESSERACT_CMD: str = os.getenv("TESSERACT_CMD", "")
 
 
 settings = Settings()

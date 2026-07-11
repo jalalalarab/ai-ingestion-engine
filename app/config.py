@@ -39,6 +39,10 @@ class Settings:
 
     # Upload limits
     MAX_PDF_MB: int = int(os.getenv("MAX_PDF_MB", "50"))
+    
+    # LLM
+    LLM_MODEL: str = _require("LLM_MODEL")
+    LLM_TIMEOUT_SECONDS: int = int(os.getenv("LLM_TIMEOUT_SECONDS", "120"))
 
 
 settings = Settings()

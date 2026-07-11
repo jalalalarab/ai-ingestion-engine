@@ -6,6 +6,7 @@ Provides:
 - upsert_chunks(): stores a batch of (id, vector, payload) points.
 - count_points(): diagnostic, returns total points in the collection.
 - delete_by_file_id(): remove all chunks belonging to a specific file.
+- search(): semantic top-k retrieval.
 """
 from uuid import uuid5, NAMESPACE_URL
 from qdrant_client import QdrantClient
@@ -81,18 +82,28 @@ def upsert_chunks(
     source_type: str,      # "pdf" or "video"
     chunks: list[str],
     vectors: list[list[float]],
-    page_numbers: list[int | None],  # None for video chunks
+    page_numbers: list[int | None],           # page for PDF chunks, None for video
+    timestamps: list[int | None] | None = None,      # video only: whole-second offset
+    frame_numbers: list[int | None] | None = None,   # video only: absolute frame index
 ) -> int:
     """
     Insert or update chunks in the collection.
 
     All list args must be the same length. Returns the number of points upserted.
+
+    PDF chunks carry page_number. Video chunks carry timestamp_seconds and
+    frame_number instead — passed via the optional `timestamps`/`frame_numbers`
+    lists. When those are None (PDF path) the fields are simply omitted.
     """
     if not (len(chunks) == len(vectors) == len(page_numbers)):
         raise ValueError(
             f"Argument lengths must match: "
             f"chunks={len(chunks)}, vectors={len(vectors)}, pages={len(page_numbers)}"
         )
+    if timestamps is not None and len(timestamps) != len(chunks):
+        raise ValueError("timestamps length must match chunks length")
+    if frame_numbers is not None and len(frame_numbers) != len(chunks):
+        raise ValueError("frame_numbers length must match chunks length")
 
     client = get_client()
     points = []
@@ -105,6 +116,12 @@ def upsert_chunks(
             "page_number": page_num,
             "text": chunk_text,  # store the text so we can build LLM prompts later
         }
+        # Video-only metadata — only added when present.
+        if timestamps is not None:
+            payload["timestamp_seconds"] = timestamps[i]
+        if frame_numbers is not None:
+            payload["frame_number"] = frame_numbers[i]
+
         points.append(
             PointStruct(
                 id=make_point_id(file_id, i),
@@ -133,6 +150,8 @@ def delete_by_file_id(file_id: str) -> None:
             must=[FieldCondition(key="file_id", match=MatchValue(value=file_id))]
         ),
     )
+
+
 def search(
     query_vector: list[float],
     top_k: int = 5,
@@ -149,6 +168,8 @@ def search(
     Returns:
         A list of dicts, each with score + payload fields.
         Ordered by descending similarity (best match first).
+        Video hits carry timestamp_seconds / frame_number; PDF hits carry
+        page_number. The other field is simply None.
     """
     client = get_client()
 
@@ -178,6 +199,8 @@ def search(
             "file_name": hit.payload.get("file_name"),
             "source_type": hit.payload.get("source_type"),
             "page_number": hit.payload.get("page_number"),
+            "timestamp_seconds": hit.payload.get("timestamp_seconds"),
+            "frame_number": hit.payload.get("frame_number"),
             "chunk_index": hit.payload.get("chunk_index"),
         }
         for hit in hits

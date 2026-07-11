@@ -3,9 +3,7 @@ Search API route — POST /search.
 """
 from pydantic import BaseModel, Field
 from fastapi import APIRouter
-
 from app.services.search_service import search_chunks
-
 
 router = APIRouter(prefix="/search", tags=["search"])
 
@@ -23,7 +21,9 @@ class SearchHit(BaseModel):
     file_id: str | None
     file_name: str | None
     source_type: str | None
-    page_number: int | None
+    page_number: int | None          # set for PDF chunks, None for video
+    timestamp_seconds: int | None = None   # set for video chunks, None for PDF
+    frame_number: int | None = None        # set for video chunks, None for PDF
     chunk_index: int | None
 
 
@@ -39,6 +39,7 @@ async def search_endpoint(payload: SearchRequest) -> SearchResponse:
     Run a semantic search over ingested chunks.
 
     Returns the top_k most similar chunks by cosine similarity, ordered best first.
+    PDF hits carry page_number; video hits carry timestamp_seconds + frame_number.
     """
     hits = search_chunks(
         query=payload.query,

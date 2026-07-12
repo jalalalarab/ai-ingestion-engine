@@ -1,5 +1,5 @@
 """
-Ingestion service — orchestrates the pipeline.
+Ingestion service - orchestrates the pipeline.
 
 Given a file's bytes/path + filename, runs:
   extract (PDF parser OR video parser) -> chunk -> embed -> upsert to Qdrant
@@ -9,16 +9,56 @@ metadata and does the shared "embed + store" work. Both PDF and video ingestion
 feed into it, so the engine is only written once.
 
 Returns a report summarizing what happened, which the API returns as JSON.
+
+Phase 7 change (content-hash dedup):
+  file_id is now DERIVED FROM THE FILE'S CONTENT instead of a random uuid4().
+  Same bytes in -> same file_id out. Because Qdrant point IDs are seeded from
+  file_id, re-ingesting an identical file now reuses the same IDs (upsert
+  overwrites in place) instead of writing a second random copy. We keep the ID
+  in UUID form (uuid5 of the SHA-256 digest) so it stays a valid drop-in for the
+  old str(uuid4()) everywhere downstream.
 """
 from dataclasses import dataclass
 
-from uuid import uuid4
+import hashlib
+from uuid import uuid5, NAMESPACE_URL
 
 from app.parsers.pdf_parser import extract_pdf_pages
 from app.parsers.video_parser import extract_video_frames
 from app.chunking.simple_chunker import chunk_text
 from app.embeddings.embedding_client import embed_batch
 from app.vector_store.qdrant_store import ensure_collection, upsert_chunks
+
+
+# Fixed namespace for turning a content hash into a stable UUID. Any constant
+# UUID works; NAMESPACE_URL is a standard, well-known one. Keeping it fixed is
+# what guarantees "same file -> same file_id" across runs and machines.
+_HASH_NAMESPACE = NAMESPACE_URL
+
+
+def _file_id_from_bytes(data: bytes) -> str:
+    """
+    Deterministic file_id from raw file bytes.
+
+    SHA-256 the content, then fold that digest into a UUID (uuid5). Identical
+    content always yields the same UUID; any change to the bytes changes the
+    hash and therefore the id, so an edited file is correctly treated as new.
+    Returns a str so it's an exact drop-in for the old str(uuid4()).
+    """
+    digest = hashlib.sha256(data).hexdigest()
+    return str(uuid5(_HASH_NAMESPACE, digest))
+
+
+def _file_id_from_path(path: str) -> str:
+    """
+    Same as _file_id_from_bytes, but streams the file from disk in 1 MB blocks
+    so we don't load an entire video into memory just to hash it.
+    """
+    hasher = hashlib.sha256()
+    with open(path, "rb") as handle:
+        for block in iter(lambda: handle.read(1024 * 1024), b""):
+            hasher.update(block)
+    return str(uuid5(_HASH_NAMESPACE, hasher.hexdigest()))
 
 
 @dataclass
@@ -52,12 +92,14 @@ def ingest_pdf(pdf_bytes: bytes, file_name: str) -> IngestionReport:
     """
     ensure_collection()  # cheap safety check every ingest
 
-    file_id = str(uuid4())  # unique per file, used as the Qdrant point-ID seed
+    # Content-hash id: same PDF -> same id -> upsert overwrites instead of
+    # duplicating. Replaces the old random str(uuid4()).
+    file_id = _file_id_from_bytes(pdf_bytes)
 
     # Step 1: extract pages -> list of (page_number, text, method)
     pages = extract_pdf_pages(pdf_bytes)
 
-    # Count how many pages required OCR fallback — useful signal for the report
+    # Count how many pages required OCR fallback - useful signal for the report
     # and for spotting scanned documents in the audit trail.
     ocr_pages_count = sum(1 for _, _, method in pages if method == "ocr")
 
@@ -69,7 +111,7 @@ def ingest_pdf(pdf_bytes: bytes, file_name: str) -> IngestionReport:
             all_chunks.append(chunk)
             all_page_numbers.append(page_number)
 
-    # If the PDF was image-only or empty, nothing to embed — return early.
+    # If the PDF was image-only or empty, nothing to embed - return early.
     if not all_chunks:
         return IngestionReport(
             file_id=file_id,
@@ -111,7 +153,9 @@ def ingest_video(video_path: str, file_name: str) -> VideoIngestionReport:
     """
     ensure_collection()
 
-    file_id = str(uuid4())
+    # Content-hash id from the file on disk (streamed, so we don't load the
+    # whole video into memory). Replaces the old random str(uuid4()).
+    file_id = _file_id_from_path(video_path)
 
     # Step 1: extract frames -> list of (timestamp_seconds, frame_number, text)
     frames = extract_video_frames(video_path)

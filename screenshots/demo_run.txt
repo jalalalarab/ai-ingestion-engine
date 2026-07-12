@@ -1,0 +1,49 @@
+Sample run of demo.py against a live server.
+Command: python demo.py
+Shows the full pipeline end to end, including multimodal retrieval
+(PDF + video) and page/timestamp-cited RAG answers.
+
+======================================================================
+  STEP 1: Health check
+======================================================================
+  Server is up: {'status': 'ok'}
+======================================================================
+  STEP 2: Ingest PDF  (storage/uploads/Day1_SCANNED.pdf)
+======================================================================
+  file_id:        ab10ecf2-94ff-50cb-b902-01f31dd2d44d
+  pages:          10
+  chunks created: 32
+  OCR pages:      10
+======================================================================
+  STEP 3: Search  ("FastAPI endpoints and databases")
+======================================================================
+  5 results:
+   1. score=0.660  [Day1_SCANNED.pdf p.6]
+      FastAPI + Uvicorn + Swagger 4.1 The three-piece pattern (framework + server + docs) You installed and ran three things that are easy to confuse. They have distinct roles: * FastAPI - the framework. Ro...
+   2. score=0.650  [Day1_SCANNED.pdf p.10]
+      What's the difference between FastAPI and Uvicorn? Why do you use a virtual environment? What goes in .gitignore and why? If FastAPI running on your machine can't reach Qdrant in Docker, what's the fi...
+   3. score=0.647  [Day1_Study_Guide.pdf p.10]
+      What's the difference between FastAPI and Uvicorn? FastAPI is the framework - it defines my routes and validation. Uvicorn is the actual web server that listens on a port and calls into FastAPI. Witho...
+   4. score=0.647  [Day1_Study_Guide.pdf p.10]
+      What's the difference between FastAPI and Uvicorn? FastAPI is the framework - it defines my routes and validation. Uvicorn is the actual web server that listens on a port and calls into FastAPI. Witho...
+   5. score=0.646  [Day1_SLIDESHOW.mp4 t=28s]
+      What's the difference between FastAPI and Uvicorn? Why do you use a virtual environment? What goes in .gitignore and why? If FastAPI running on your machine can't reach Qdrant in Docker, what's the fi...
+======================================================================
+  STEP 4: Ask  ("What does this document say about building APIs with FastAPI?")
+======================================================================
+  ANSWER:
+    The document explains that FastAPI is the framework for defining routes, validation, dependency injection, and response models, but it is inert until an ASGI server (Uvicorn) serves it (p.6). Uvicorn listens on a TCP port, accepts HTTP, and calls your FastAPI code, while Swagger UI automatically documents every route at /docs using your type hints and docstrings (p.6). Code examples show creating a FastAPI app instance, using `@app.get("/health")` to register a route that returns a JSON dict, and running the app with a uvicorn command (`uvicorn app.main:app --reload --host 0.0.0.0 --port 8000`...
+  SOURCES:
+    - Day1_SCANNED.pdf p.6 (score=0.702) Day1_SCANNED.pdf - p.6
+    - Day1_Study_Guide.pdf p.6 (score=0.683) Day1_Study_Guide.pdf - p.6
+    - Day1_Study_Guide.pdf p.6 (score=0.683) Day1_Study_Guide.pdf - p.6
+    - Day1_SCANNED.pdf p.6 (score=0.681) Day1_SCANNED.pdf - p.6
+    - Day1_SLIDESHOW.mp4 - (score=0.672) Day1_SLIDESHOW.mp4
+======================================================================
+  Demo complete: health -> ingest -> search -> ask, all working.
+======================================================================
+
+Note: results 3 and 4 are near-identical because Day1_Study_Guide.pdf was
+ingested twice before content-hash dedup existed (random file_ids at the time).
+New ingests can no longer create duplicates; these are pre-existing store
+entries that a cleanup pass would remove.

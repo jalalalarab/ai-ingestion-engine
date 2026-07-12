@@ -11,17 +11,21 @@ feed into it, so the engine is only written once.
 Returns a report summarizing what happened, which the API returns as JSON.
 
 Phase 7 change (content-hash dedup):
-  file_id is now DERIVED FROM THE FILE'S CONTENT instead of a random uuid4().
+  file_id is DERIVED FROM THE FILE'S CONTENT instead of a random uuid4().
   Same bytes in -> same file_id out. Because Qdrant point IDs are seeded from
-  file_id, re-ingesting an identical file now reuses the same IDs (upsert
-  overwrites in place) instead of writing a second random copy. We keep the ID
-  in UUID form (uuid5 of the SHA-256 digest) so it stays a valid drop-in for the
-  old str(uuid4()) everywhere downstream.
+  file_id, re-ingesting an identical file reuses the same IDs (upsert overwrites
+  in place) instead of writing a second random copy. We keep the ID in UUID form
+  (uuid5 of the SHA-256 digest) so it stays a valid drop-in for str(uuid4()).
 
 Phase 7 change (logging):
-  Each stage now logs at INFO so ingestion is visible in the console. The
-  file_id is logged on every run - re-ingesting an identical file prints the
-  SAME id, which is the live proof that dedup works (it overwrites in place).
+  Each stage logs at INFO so ingestion is visible in the console. The file_id is
+  logged on every run - re-ingesting an identical file prints the SAME id, which
+  is the live proof that dedup works (it overwrites in place).
+
+Chunking strategy toggle:
+  `_chunk` picks the chunker based on settings.CHUNKING_STRATEGY:
+  "semantic" (embedding-similarity splits) or "simple" (fixed-size window).
+  Both PDF and video route through `_chunk`, so the choice is made in one place.
 """
 from dataclasses import dataclass
 
@@ -29,9 +33,11 @@ import hashlib
 import logging
 from uuid import uuid5, NAMESPACE_URL
 
+from app.config import settings
 from app.parsers.pdf_parser import extract_pdf_pages
 from app.parsers.video_parser import extract_video_frames
-from app.chunking.simple_chunker import chunk_text
+from app.chunking.simple_chunker import chunk_text as _simple_chunk
+from app.chunking.semantic_chunker import semantic_chunk_text as _semantic_chunk
 from app.embeddings.embedding_client import embed_batch
 from app.vector_store.qdrant_store import ensure_collection, upsert_chunks
 
@@ -43,6 +49,17 @@ logger = logging.getLogger(__name__)
 # UUID works; NAMESPACE_URL is a standard, well-known one. Keeping it fixed is
 # what guarantees "same file -> same file_id" across runs and machines.
 _HASH_NAMESPACE = NAMESPACE_URL
+
+
+def _chunk(text: str) -> list[str]:
+    """
+    Dispatch to the configured chunker. Defaults to semantic for any value
+    other than the explicit "simple", so a typo in .env fails safe (better
+    chunking, never a crash).
+    """
+    if settings.CHUNKING_STRATEGY == "simple":
+        return _simple_chunk(text)
+    return _semantic_chunk(text)
 
 
 def _file_id_from_bytes(data: bytes) -> str:
@@ -104,7 +121,8 @@ def ingest_pdf(pdf_bytes: bytes, file_name: str) -> IngestionReport:
     # Content-hash id: same PDF -> same id -> upsert overwrites instead of
     # duplicating. Replaces the old random str(uuid4()).
     file_id = _file_id_from_bytes(pdf_bytes)
-    logger.info("PDF ingest start: '%s' [file_id=%s]", file_name, file_id[:8])
+    logger.info("PDF ingest start: '%s' [file_id=%s] [chunker=%s]",
+                file_name, file_id[:8], settings.CHUNKING_STRATEGY)
 
     # Step 1: extract pages -> list of (page_number, text, method)
     pages = extract_pdf_pages(pdf_bytes)
@@ -118,7 +136,7 @@ def ingest_pdf(pdf_bytes: bytes, file_name: str) -> IngestionReport:
     all_chunks: list[str] = []
     all_page_numbers: list[int | None] = []
     for page_number, page_text, _method in pages:
-        for chunk in chunk_text(page_text):
+        for chunk in _chunk(page_text):
             all_chunks.append(chunk)
             all_page_numbers.append(page_number)
 
@@ -170,7 +188,8 @@ def ingest_video(video_path: str, file_name: str) -> VideoIngestionReport:
     # Content-hash id from the file on disk (streamed, so we don't load the
     # whole video into memory). Replaces the old random str(uuid4()).
     file_id = _file_id_from_path(video_path)
-    logger.info("Video ingest start: '%s' [file_id=%s]", file_name, file_id[:8])
+    logger.info("Video ingest start: '%s' [file_id=%s] [chunker=%s]",
+                file_name, file_id[:8], settings.CHUNKING_STRATEGY)
 
     # Step 1: extract frames -> list of (timestamp_seconds, frame_number, text)
     frames = extract_video_frames(video_path)
@@ -181,7 +200,7 @@ def ingest_video(video_path: str, file_name: str) -> VideoIngestionReport:
     all_timestamps: list[int | None] = []
     all_frame_numbers: list[int | None] = []
     for timestamp_seconds, frame_number, frame_text in frames:
-        for chunk in chunk_text(frame_text):
+        for chunk in _chunk(frame_text):
             all_chunks.append(chunk)
             all_timestamps.append(timestamp_seconds)
             all_frame_numbers.append(frame_number)

@@ -119,6 +119,7 @@ Open **http://localhost:8000/docs** for the interactive Swagger UI.
 | `EMBEDDING_DIM` | `768` | Vector size (pinned; must match the collection) |
 | `CHUNK_SIZE_TOKENS` | `700` | Target chunk size |
 | `CHUNK_OVERLAP_TOKENS` | `100` | Overlap between chunks |
+| `CHUNKING_STRATEGY` | `semantic` | `semantic` (meaning-based splits) or `simple` (fixed-size) |
 | `MAX_PDF_MB` | `50` | Upload size cap |
 | `LLM_MODEL` | `gpt-oss:20b-cloud` | Answer model |
 | `LLM_TIMEOUT_SECONDS` | `120` | LLM call timeout |
@@ -155,6 +156,8 @@ curl.exe -F "file=@storage/uploads/mydoc.pdf" http://localhost:8000/ingest/pdf
 
 ## How it works (the parts that make it not a toy)
 
+**Semantic chunking.** Instead of slicing text at a fixed character count, the default chunker (`semantic`) embeds every sentence and measures where the *meaning* shifts — cosine distance between neighbouring sentences — then splits at the biggest topic jumps (the top percentile of distances in that document, so it adapts per-file rather than using a fragile fixed threshold). A size cap prevents runaway chunks, and it falls back to fixed-size chunking on very short or very long pages. The strategy is switchable via `CHUNKING_STRATEGY` (`semantic` or `simple`) — the simple fixed-size chunker is kept as a fast, dependency-free fallback. Sentence embeddings run concurrently so this stays fast even on CPU-only Ollama.
+
 **OCR fallback.** If a PDF page yields almost no selectable text (a scanned page), the engine renders that page to an image and runs Tesseract OCR instead — so scanned documents are still searchable. Each chunk records its `extraction_method` for debugging.
 
 **Content-hash deduplication.** The `file_id` is derived from a SHA-256 hash of the file's content (folded into a UUID), not a random value. Because Qdrant point IDs are built from the `file_id`, re-ingesting the same file lands on the same point IDs and **overwrites in place** instead of creating duplicates. Same file in → same chunks, no bloat. Edit the file → the hash changes → it's correctly treated as new.
@@ -178,7 +181,7 @@ The project was built incrementally, one working slice at a time:
 - **Phase 4** — OCR fallback for scanned PDFs (Tesseract)
 - **Phase 5** — Video ingestion: frame sampling + OCR + near-duplicate skip (`POST /ingest/video`)
 - **Phase 6** — n8n automation: Webhook → HTTP Request → FastAPI → Respond to Webhook
-- **Phase 7** — Logging, content-hash dedup, docs
+- **Phase 7** — Logging, content-hash dedup, semantic chunking (concurrent embeddings), docs
 
 ---
 
@@ -192,7 +195,7 @@ app/
   api/                     # routes_health, routes_ingest, routes_search, routes_ask
   services/                # ingestion_service, search_service, answer_service
   parsers/                 # pdf_parser, ocr_parser, video_parser
-  chunking/                # simple_chunker
+  chunking/                # simple_chunker (fixed-size) + semantic_chunker (embedding-similarity)
   embeddings/              # embedding_client
   vector_store/            # qdrant_store  (the only module that talks to Qdrant)
   llm/                     # llm_client
@@ -208,7 +211,7 @@ tests/                     # test artifacts + generators
 Honest about what an MVP this is:
 
 - **No background job queue** — very large videos/PDFs are processed in the request; long files could hit HTTP timeouts. Next: async job queue with status polling.
-- **Simple chunking** — currently paragraph/token-based with overlap. Next: semantic chunking that keeps headings with their sections.
+- **Regex sentence splitting** — the semantic chunker splits sentences with a regex, which can mis-handle abbreviations. A proper NLP sentence tokenizer (nltk/spaCy) would be more robust, at the cost of a dependency.
 - **Single embedding model, English-focused OCR** — Tesseract language packs and multilingual embeddings would extend it.
 - **No auth on the API** — fine for local/demo; would add API keys before any real deployment.
 - **Vision captions for frames** are stubbed as a future step — currently video relies on frame OCR only.

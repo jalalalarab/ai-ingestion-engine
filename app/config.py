@@ -1,8 +1,7 @@
 """
 Central configuration.
-
 Reads .env at import time and exposes typed constants everything else imports.
-Rule: no other module reads env vars directly — all config comes through here.
+Rule: no other module reads env vars directly - all config comes through here.
 """
 from pathlib import Path
 from dotenv import load_dotenv
@@ -14,7 +13,7 @@ load_dotenv(PROJECT_ROOT / ".env")
 
 
 def _require(name: str) -> str:
-    """Fail loudly if a required env var is missing — better than silent bugs later."""
+    """Fail loudly if a required env var is missing - better than silent bugs later."""
     value = os.getenv(name)
     if value is None or value == "":
         raise RuntimeError(f"Missing required env var: {name}")
@@ -36,14 +35,18 @@ class Settings:
     # Chunking
     CHUNK_SIZE_TOKENS: int = int(os.getenv("CHUNK_SIZE_TOKENS", "700"))
     CHUNK_OVERLAP_TOKENS: int = int(os.getenv("CHUNK_OVERLAP_TOKENS", "100"))
+    # Which chunker to use: "semantic" (embedding-similarity splits) or
+    # "simple" (fixed-size sliding window). Semantic gives better retrieval;
+    # simple is the fast, dependency-free fallback.
+    CHUNKING_STRATEGY: str = os.getenv("CHUNKING_STRATEGY", "semantic").lower()
 
     # Upload limits
     MAX_PDF_MB: int = int(os.getenv("MAX_PDF_MB", "50"))
-    
+
     # LLM
     LLM_MODEL: str = _require("LLM_MODEL")
     LLM_TIMEOUT_SECONDS: int = int(os.getenv("LLM_TIMEOUT_SECONDS", "120"))
-    
+
     # OCR (Windows needs an explicit tesseract.exe path; on Linux/Mac PATH usually finds it)
     TESSERACT_CMD: str = os.getenv("TESSERACT_CMD", "")
 

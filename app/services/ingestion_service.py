@@ -17,10 +17,16 @@ Phase 7 change (content-hash dedup):
   overwrites in place) instead of writing a second random copy. We keep the ID
   in UUID form (uuid5 of the SHA-256 digest) so it stays a valid drop-in for the
   old str(uuid4()) everywhere downstream.
+
+Phase 7 change (logging):
+  Each stage now logs at INFO so ingestion is visible in the console. The
+  file_id is logged on every run - re-ingesting an identical file prints the
+  SAME id, which is the live proof that dedup works (it overwrites in place).
 """
 from dataclasses import dataclass
 
 import hashlib
+import logging
 from uuid import uuid5, NAMESPACE_URL
 
 from app.parsers.pdf_parser import extract_pdf_pages
@@ -28,6 +34,9 @@ from app.parsers.video_parser import extract_video_frames
 from app.chunking.simple_chunker import chunk_text
 from app.embeddings.embedding_client import embed_batch
 from app.vector_store.qdrant_store import ensure_collection, upsert_chunks
+
+
+logger = logging.getLogger(__name__)
 
 
 # Fixed namespace for turning a content hash into a stable UUID. Any constant
@@ -95,6 +104,7 @@ def ingest_pdf(pdf_bytes: bytes, file_name: str) -> IngestionReport:
     # Content-hash id: same PDF -> same id -> upsert overwrites instead of
     # duplicating. Replaces the old random str(uuid4()).
     file_id = _file_id_from_bytes(pdf_bytes)
+    logger.info("PDF ingest start: '%s' [file_id=%s]", file_name, file_id[:8])
 
     # Step 1: extract pages -> list of (page_number, text, method)
     pages = extract_pdf_pages(pdf_bytes)
@@ -102,6 +112,7 @@ def ingest_pdf(pdf_bytes: bytes, file_name: str) -> IngestionReport:
     # Count how many pages required OCR fallback - useful signal for the report
     # and for spotting scanned documents in the audit trail.
     ocr_pages_count = sum(1 for _, _, method in pages if method == "ocr")
+    logger.info("Extracted %d pages (%d via OCR)", len(pages), ocr_pages_count)
 
     # Step 2: chunk each page, tagging every chunk with its origin page number.
     all_chunks: list[str] = []
@@ -113,6 +124,7 @@ def ingest_pdf(pdf_bytes: bytes, file_name: str) -> IngestionReport:
 
     # If the PDF was image-only or empty, nothing to embed - return early.
     if not all_chunks:
+        logger.warning("No text extracted from '%s' - nothing to embed", file_name)
         return IngestionReport(
             file_id=file_id,
             file_name=file_name,
@@ -131,6 +143,8 @@ def ingest_pdf(pdf_bytes: bytes, file_name: str) -> IngestionReport:
         page_numbers=all_page_numbers,
     )
 
+    logger.info("PDF ingest done: '%s' -> %d chunks stored [file_id=%s]",
+                file_name, n, file_id[:8])
     return IngestionReport(
         file_id=file_id,
         file_name=file_name,
@@ -156,9 +170,11 @@ def ingest_video(video_path: str, file_name: str) -> VideoIngestionReport:
     # Content-hash id from the file on disk (streamed, so we don't load the
     # whole video into memory). Replaces the old random str(uuid4()).
     file_id = _file_id_from_path(video_path)
+    logger.info("Video ingest start: '%s' [file_id=%s]", file_name, file_id[:8])
 
     # Step 1: extract frames -> list of (timestamp_seconds, frame_number, text)
     frames = extract_video_frames(video_path)
+    logger.info("Extracted %d usable frames from '%s'", len(frames), file_name)
 
     # Step 2: chunk each frame, tagging every chunk with timestamp + frame number.
     all_chunks: list[str] = []
@@ -172,6 +188,7 @@ def ingest_video(video_path: str, file_name: str) -> VideoIngestionReport:
 
     # No readable frames -> nothing to embed.
     if not all_chunks:
+        logger.warning("No readable text in '%s' - nothing to embed", file_name)
         return VideoIngestionReport(
             file_id=file_id,
             file_name=file_name,
@@ -191,6 +208,8 @@ def ingest_video(video_path: str, file_name: str) -> VideoIngestionReport:
         frame_numbers=all_frame_numbers,
     )
 
+    logger.info("Video ingest done: '%s' -> %d chunks stored [file_id=%s]",
+                file_name, n, file_id[:8])
     return VideoIngestionReport(
         file_id=file_id,
         file_name=file_name,
@@ -216,6 +235,8 @@ def _ingest_texts(
     Both hand off a list of chunks + metadata; this function embeds and stores.
     Returns the number of chunks upserted.
     """
+    logger.debug("Embedding %d chunks (%s) then upserting to Qdrant",
+                 len(chunks), source_type)
     vectors = embed_batch(chunks)
     return upsert_chunks(
         file_id=file_id,

@@ -1,18 +1,28 @@
 """
-AI Ingestion Engine — FastAPI application entry point.
+AI Ingestion Engine - FastAPI application entry point.
 """
+import logging
+
 from fastapi import FastAPI
 
+from app.logging_config import setup_logging
 from app.api.routes_ingest import router as ingest_router
 from app.api.routes_search import router as search_router
 from app.api.routes_ask import router as ask_router
 
+# Configure logging FIRST, before any router code runs or logs. Anything
+# imported above/below can then use logging.getLogger(__name__) and it just
+# works with our format.
+setup_logging()
+logger = logging.getLogger(__name__)
 
 app = FastAPI(
     title="AI Ingestion Engine",
     description="Multimodal RAG pipeline for PDFs and videos.",
     version="0.3.0",
 )
+
+logger.info("AI Ingestion Engine starting (version %s)", app.version)
 
 
 @app.get("/health", tags=["health"])

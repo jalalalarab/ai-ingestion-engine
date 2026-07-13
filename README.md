@@ -64,7 +64,7 @@ PDF and video are handled by **different extractors** but flow into a **single s
 | OCR | **Tesseract** (pytesseract) | Scanned PDFs, images in PDFs, video frame text |
 | PDF parsing | **PyMuPDF** | Fast text extraction + page rasterization for OCR |
 | Video frames | **OpenCV** | Frame sampling from video |
-| Automation | **n8n** (Docker) | Webhook-triggered ingestion workflows |
+| Automation | **n8n** (Docker) | One webhook workflow that routes PDF vs video ingestion by file type |
 | Runtime | **Python 3.12** in `.venv` | |
 
 ---
@@ -160,6 +160,8 @@ curl.exe -F "file=@storage/uploads/mydoc.pdf" http://localhost:8000/ingest/pdf
 
 **OCR fallback.** If a PDF page yields almost no selectable text (a scanned page), the engine renders that page to an image and runs Tesseract OCR instead — so scanned documents are still searchable. Each chunk records its `extraction_method` for debugging.
 
+**Embedded-image OCR.** Even on normal text pages, images (screenshots, charts) can contain text the text layer doesn't include. For text pages that also carry sizeable images, the engine extracts each embedded image and OCRs it too, merging that text in — so figures and labels living *inside* a picture become searchable. Tiny images (icons/logos, under 200px) are skipped to avoid noise. The two OCR paths are reported separately: `ocr_pages_count` (fully scanned pages) and `image_ocr_pages_count` (text pages whose images were OCR'd), so a digital PDF with screenshots honestly shows `ocr=0, image_ocr>0`.
+
 **Content-hash deduplication.** The `file_id` is derived from a SHA-256 hash of the file's content (folded into a UUID), not a random value. Because Qdrant point IDs are built from the `file_id`, re-ingesting the same file lands on the same point IDs and **overwrites in place** instead of creating duplicates. Same file in → same chunks, no bloat. Edit the file → the hash changes → it's correctly treated as new.
 
 **Two-layer anti-hallucination guard.** On `/ask`:
@@ -180,8 +182,8 @@ The project was built incrementally, one working slice at a time:
 - **Phase 3** — RAG answers with anti-hallucination guard + cited sources (`POST /ask`)
 - **Phase 4** — OCR fallback for scanned PDFs (Tesseract)
 - **Phase 5** — Video ingestion: frame sampling + OCR + near-duplicate skip (`POST /ingest/video`)
-- **Phase 6** — n8n automation: Webhook → HTTP Request → FastAPI → Respond to Webhook
-- **Phase 7** — Logging, content-hash dedup, semantic chunking (concurrent embeddings), docs
+- **Phase 6** — n8n automation: one webhook workflow that routes PDF vs video ingestion by file type (dynamic endpoint URL)
+- **Phase 7** — Logging, content-hash dedup, semantic chunking (concurrent embeddings), embedded-image OCR, docs
 
 ---
 
@@ -212,6 +214,7 @@ Honest about what an MVP this is:
 
 - **No background job queue** — very large videos/PDFs are processed in the request; long files could hit HTTP timeouts. Next: async job queue with status polling.
 - **Regex sentence splitting** — the semantic chunker splits sentences with a regex, which can mis-handle abbreviations. A proper NLP sentence tokenizer (nltk/spaCy) would be more robust, at the cost of a dependency.
+- **Embedded-image OCR is imperfect** — text inside screenshots is captured, but small or low-resolution figures may read incorrectly or be missed. When a figure isn't captured, the confidence guard correctly returns "not found" rather than guessing.
 - **Single embedding model, English-focused OCR** — Tesseract language packs and multilingual embeddings would extend it.
 - **No auth on the API** — fine for local/demo; would add API keys before any real deployment.
 - **Vision captions for frames** are stubbed as a future step — currently video relies on frame OCR only.

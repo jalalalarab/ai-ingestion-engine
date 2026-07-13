@@ -4,7 +4,7 @@
     {
       "parameters": {
         "httpMethod": "POST",
-        "path": "ingest-pdf",
+        "path": "ingest",
         "responseMode": "responseNode",
         "options": {}
       },
@@ -21,7 +21,7 @@
     {
       "parameters": {
         "method": "POST",
-        "url": "http://host.docker.internal:8000/ingest/pdf",
+        "url": "=http://host.docker.internal:8000/ingest/{{ ($binary.file.fileName || $binary.file.mimeType || '').toLowerCase().includes('pdf') ? 'pdf' : 'video' }}",
         "sendBody": true,
         "contentType": "multipart-form-data",
         "bodyParameters": {

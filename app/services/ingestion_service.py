@@ -26,6 +26,14 @@ Chunking strategy toggle:
   `_chunk` picks the chunker based on settings.CHUNKING_STRATEGY:
   "semantic" (embedding-similarity splits) or "simple" (fixed-size window).
   Both PDF and video route through `_chunk`, so the choice is made in one place.
+
+OCR reporting:
+  Two distinct OCR counts, kept separate so the report is honest:
+    - ocr_pages_count:       pages that were FULLY SCANNED (whole-page OCR).
+    - image_ocr_pages_count: text pages whose EMBEDDED IMAGES were OCR'd
+                             (e.g. screenshots on an otherwise-text page).
+  A digital PDF with screenshots shows ocr=0 but image_ocr>0 - which correctly
+  says "not a scan, but we captured picture-text."
 """
 from dataclasses import dataclass
 
@@ -94,7 +102,8 @@ class IngestionReport:
     source_type: str
     pages_processed: int
     chunks_created: int
-    ocr_pages_count: int
+    ocr_pages_count: int          # pages that were fully scanned (whole-page OCR)
+    image_ocr_pages_count: int    # text pages whose embedded images were OCR'd
 
 
 @dataclass
@@ -111,7 +120,8 @@ def ingest_pdf(pdf_bytes: bytes, file_name: str) -> IngestionReport:
     Full PDF ingestion pipeline.
 
     Steps:
-      1. Extract text page-by-page (OCR fallback for scanned pages).
+      1. Extract text page-by-page (OCR fallback for scanned pages,
+         embedded-image OCR for text pages with pictures).
       2. Chunk each page (attaching page number to every chunk).
       3. Embed all chunks in one batch.
       4. Upsert to Qdrant with metadata.
@@ -127,10 +137,13 @@ def ingest_pdf(pdf_bytes: bytes, file_name: str) -> IngestionReport:
     # Step 1: extract pages -> list of (page_number, text, method)
     pages = extract_pdf_pages(pdf_bytes)
 
-    # Count how many pages required OCR fallback - useful signal for the report
-    # and for spotting scanned documents in the audit trail.
+    # Two OCR signals, counted separately so the report stays honest:
+    #   'ocr'          = whole page was a scan (full-page OCR)
+    #   'pdf_text+ocr' = text page whose embedded images we OCR'd (screenshots)
     ocr_pages_count = sum(1 for _, _, method in pages if method == "ocr")
-    logger.info("Extracted %d pages (%d via OCR)", len(pages), ocr_pages_count)
+    image_ocr_pages_count = sum(1 for _, _, method in pages if method == "pdf_text+ocr")
+    logger.info("Extracted %d pages (%d full-page OCR, %d embedded-image OCR)",
+                len(pages), ocr_pages_count, image_ocr_pages_count)
 
     # Step 2: chunk each page, tagging every chunk with its origin page number.
     all_chunks: list[str] = []
@@ -150,6 +163,7 @@ def ingest_pdf(pdf_bytes: bytes, file_name: str) -> IngestionReport:
             pages_processed=len(pages),
             chunks_created=0,
             ocr_pages_count=ocr_pages_count,
+            image_ocr_pages_count=image_ocr_pages_count,
         )
 
     # Step 3 + 4: embed and upsert (shared seam)
@@ -170,6 +184,7 @@ def ingest_pdf(pdf_bytes: bytes, file_name: str) -> IngestionReport:
         pages_processed=len(pages),
         chunks_created=n,
         ocr_pages_count=ocr_pages_count,
+        image_ocr_pages_count=image_ocr_pages_count,
     )
 
 

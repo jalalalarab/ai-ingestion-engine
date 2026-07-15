@@ -43,10 +43,12 @@ class Source:
     file_id: str | None
     file_name: str | None
     source_type: str | None
-    page_number: int | None
+    page_number: int | None            # PDF only; None for video
+    timestamp_seconds: int | None      # video only; None for PDF
+    frame_number: int | None           # video only; None for PDF
     chunk_index: int | None
     score: float
-    label: str  # human-readable, e.g. "Day1_Study_Guide.pdf — p.3"
+    label: str  # human-readable, e.g. "Day1_Study_Guide.pdf — p.3" or "clip.mp4 — 04:32"
 
 
 @dataclass
@@ -56,12 +58,23 @@ class AnswerResponse:
     sources: list[Source] = field(default_factory=list)
 
 
+def _format_timestamp(seconds: int) -> str:
+    """Turn a whole-second offset into MM:SS (or H:MM:SS past an hour)."""
+    h, rem = divmod(seconds, 3600)
+    m, s = divmod(rem, 60)
+    if h:
+        return f"{h}:{m:02d}:{s:02d}"
+    return f"{m:02d}:{s:02d}"
+
+
 def _label_for(hit: dict) -> str:
-    """Human-readable citation label — e.g. 'file.pdf — p.5' or 'video.mp4 — 00:04:32'."""
+    """Human-readable citation label — e.g. 'file.pdf — p.5' or 'video.mp4 — 04:32'."""
     name = hit.get("file_name") or "unknown"
     if hit.get("page_number") is not None:
         return f"{name} — p.{hit['page_number']}"
-    # Video branch (Phase 5) — kept here so the shape is future-proof
+    # Video branch — cite the moment in the clip when we have a timestamp.
+    if hit.get("timestamp_seconds") is not None:
+        return f"{name} — {_format_timestamp(hit['timestamp_seconds'])}"
     return name
 
 
@@ -127,6 +140,8 @@ def answer_question(
             file_name=hit.get("file_name"),
             source_type=hit.get("source_type"),
             page_number=hit.get("page_number"),
+            timestamp_seconds=hit.get("timestamp_seconds"),
+            frame_number=hit.get("frame_number"),
             chunk_index=hit.get("chunk_index"),
             score=hit["score"],
             label=_label_for(hit),

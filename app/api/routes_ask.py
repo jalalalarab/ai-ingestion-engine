@@ -26,6 +26,8 @@ class SourceModel(BaseModel):
     file_name: str | None
     source_type: str | None
     page_number: int | None
+    timestamp_seconds: int | None
+    frame_number: int | None
     chunk_index: int | None
     score: float
     label: str

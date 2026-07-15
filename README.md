@@ -78,11 +78,15 @@ PDF and video are handled by **different extractors** but flow into a **single s
 git clone https://github.com/jalalalarab/ai-ingestion-engine.git
 cd ai-ingestion-engine
 
-# 2. Start Qdrant and n8n as Docker containers
-docker run -d --name qdrant -p 6333:6333 -p 6334:6334 \
-  -v qdrant_storage:/qdrant/storage qdrant/qdrant:latest
-docker run -d --name n8n -p 5678:5678 \
-  -v n8n_data:/home/node/.n8n docker.n8n.io/n8nio/n8n:latest
+# 2. Start Qdrant and n8n as Docker containers (first-time setup — creates them)
+# Each command is a single line. (On Linux/macOS you may split with a trailing backslash;
+# on Windows PowerShell keep each command on one line, as below.)
+docker run -d --name qdrant -p 6333:6333 -p 6334:6334 -v qdrant_storage:/qdrant/storage qdrant/qdrant:latest
+docker run -d --name n8n -p 5678:5678 -v n8n_data:/home/node/.n8n docker.n8n.io/n8nio/n8n:latest
+
+# On later runs the containers already exist — don't run the above again.
+# Just start the existing ones (keeps all stored data):
+#   docker start qdrant n8n
 
 # 3. Python environment
 python -m venv .venv

@@ -158,6 +158,25 @@ curl.exe -F "file=@storage/uploads/mydoc.pdf" http://localhost:8000/ingest/pdf
 
 ---
 
+## n8n automation
+
+An n8n workflow triggers ingestion automatically over a webhook, instead of calling the API by hand. The exported workflow lives at **`n8n_workflows/ingest_webhook.json`**.
+
+**How to use it:**
+1. Open n8n at `http://localhost:5678`.
+2. Import the workflow: **⋯ menu → Import from File →** select `n8n_workflows/ingest_webhook.json`.
+3. **Activate** the workflow (the toggle, top-right) so the production webhook URL is live.
+4. POST a file to the webhook — it routes to the right endpoint by file type:
+   ```bash
+   curl.exe -F "file=@storage/uploads/mydoc.pdf" http://localhost:5678/webhook/ingest
+   ```
+
+The workflow is three nodes: **Webhook** (receives the file) → **HTTP Request** (forwards it to FastAPI at `host.docker.internal:8000`, choosing `/ingest/pdf` or `/ingest/video` from the file type via a dynamic URL) → **Respond to Webhook** (returns the result). It uses `host.docker.internal` rather than `localhost` because n8n runs in a container and must reach FastAPI on the host.
+
+> Note: the production URL (`/webhook/ingest`) only works when the workflow is Activated. For a one-off test without activating, use `/webhook-test/ingest` right after clicking "Listen for test event".
+
+---
+
 ## How it works (the parts that make it not a toy)
 
 **Semantic chunking.** Instead of slicing text at a fixed character count, the default chunker (`semantic`) embeds every sentence and measures where the *meaning* shifts — cosine distance between neighbouring sentences — then splits at the biggest topic jumps (the top percentile of distances in that document, so it adapts per-file rather than using a fragile fixed threshold). A size cap prevents runaway chunks, and it falls back to fixed-size chunking on very short or very long pages. The strategy is switchable via `CHUNKING_STRATEGY` (`semantic` or `simple`) — the simple fixed-size chunker is kept as a fast, dependency-free fallback. Sentence embeddings run concurrently so this stays fast even on CPU-only Ollama.

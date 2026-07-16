@@ -25,9 +25,10 @@ from app.config import settings
 if settings.TESSERACT_CMD:
     pytesseract.pytesseract.tesseract_cmd = settings.TESSERACT_CMD
 
-# Sample a frame every this many seconds. 2s is a good default for slide decks —
-# frequent enough to catch every slide, sparse enough to keep OCR time sane.
-SAMPLE_EVERY_SECONDS = 2
+# Sample a frame every this many seconds, read from config (VIDEO_SAMPLE_SECONDS,
+# default 5). 5s suits slide/meeting videos; lower it for fast-changing content.
+# Near-duplicate frames are dropped below, so over-sampling won't create dupes.
+SAMPLE_EVERY_SECONDS = settings.VIDEO_SAMPLE_SECONDS
 
 # A sampled frame whose OCR text is shorter than this is treated as blank
 # (transition, black frame, logo) and dropped. Same idea as the PDF 30-char gate.

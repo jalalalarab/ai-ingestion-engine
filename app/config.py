@@ -43,6 +43,10 @@ class Settings:
     # Upload limits
     MAX_PDF_MB: int = int(os.getenv("MAX_PDF_MB", "50"))
 
+    # Video ingestion — sample one frame every N seconds. 5s suits meeting/slide
+    # videos (slides change slowly); lower it for fast-changing content.
+    VIDEO_SAMPLE_SECONDS: int = int(os.getenv("VIDEO_SAMPLE_SECONDS", "5"))
+
     # LLM
     LLM_MODEL: str = _require("LLM_MODEL")
     LLM_TIMEOUT_SECONDS: int = int(os.getenv("LLM_TIMEOUT_SECONDS", "120"))

@@ -152,6 +152,61 @@ def delete_by_file_id(file_id: str) -> None:
     )
 
 
+def get_chunks_by_file_id(
+    file_id: str,
+    source_type: str | None = None,
+) -> list[dict]:
+    """
+    Fetch ALL chunks for a file (not a similarity search — a full scroll).
+
+    Used by Minutes-of-Meeting to pull an entire video's transcript back out of
+    Qdrant. Returns chunks ordered by chunk_index so the text reads in sequence.
+
+    Optional source_type filter (e.g. "video" to get only that file's chunks,
+    or you could further narrow — here we return all chunks for the file).
+    """
+    client = get_client()
+
+    conditions = [FieldCondition(key="file_id", match=MatchValue(value=file_id))]
+    if source_type is not None:
+        conditions.append(
+            FieldCondition(key="source_type", match=MatchValue(value=source_type))
+        )
+    q_filter = Filter(must=conditions)
+
+    results: list[dict] = []
+    offset = None
+    # Scroll in pages until Qdrant returns no more points.
+    while True:
+        points, offset = client.scroll(
+            collection_name=settings.QDRANT_COLLECTION,
+            scroll_filter=q_filter,
+            limit=256,
+            offset=offset,
+            with_payload=True,
+            with_vectors=False,  # we only need the text/metadata, not the vectors
+        )
+        for p in points:
+            payload = p.payload or {}
+            results.append(
+                {
+                    "text": payload.get("text", ""),
+                    "chunk_index": payload.get("chunk_index"),
+                    "timestamp_seconds": payload.get("timestamp_seconds"),
+                    "frame_number": payload.get("frame_number"),
+                    "page_number": payload.get("page_number"),
+                    "source_type": payload.get("source_type"),
+                    "file_name": payload.get("file_name"),
+                }
+            )
+        if offset is None:  # no more pages
+            break
+
+    # Order by chunk_index so the transcript reads start-to-finish.
+    results.sort(key=lambda c: (c["chunk_index"] if c["chunk_index"] is not None else 0))
+    return results
+
+
 def search(
     query_vector: list[float],
     top_k: int = 5,

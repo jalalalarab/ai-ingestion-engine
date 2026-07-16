@@ -54,6 +54,10 @@ class Settings:
     # Master switch: if false (or no key), ingestion skips transcription entirely.
     TRANSCRIBE_VIDEO: bool = os.getenv("TRANSCRIBE_VIDEO", "true").lower() == "true"
 
+    # Minutes of Meeting — max characters of transcript per LLM call before the
+    # map-reduce path kicks in (~4 chars/token; 12000 chars ~= 3000 tokens input).
+    MOM_BATCH_CHARS: int = int(os.getenv("MOM_BATCH_CHARS", "12000"))
+
     # LLM
     LLM_MODEL: str = _require("LLM_MODEL")
     LLM_TIMEOUT_SECONDS: int = int(os.getenv("LLM_TIMEOUT_SECONDS", "120"))

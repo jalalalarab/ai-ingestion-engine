@@ -26,24 +26,19 @@ Chunking strategy toggle:
   `_chunk` picks the chunker based on settings.CHUNKING_STRATEGY:
   "semantic" (embedding-similarity splits) or "simple" (fixed-size window).
   Both PDF and video route through `_chunk`, so the choice is made in one place.
-
-OCR reporting:
-  Two distinct OCR counts, kept separate so the report is honest:
-    - ocr_pages_count:       pages that were FULLY SCANNED (whole-page OCR).
-    - image_ocr_pages_count: text pages whose EMBEDDED IMAGES were OCR'd
-                             (e.g. screenshots on an otherwise-text page).
-  A digital PDF with screenshots shows ocr=0 but image_ocr>0 - which correctly
-  says "not a scan, but we captured picture-text."
 """
 from dataclasses import dataclass
 
 import hashlib
 import logging
+from pathlib import Path
 from uuid import uuid5, NAMESPACE_URL
 
 from app.config import settings
 from app.parsers.pdf_parser import extract_pdf_pages
 from app.parsers.video_parser import extract_video_frames
+from app.parsers.audio_extractor import extract_audio
+from app.transcription.transcription_client import transcribe_audio
 from app.chunking.simple_chunker import chunk_text as _simple_chunk
 from app.chunking.semantic_chunker import semantic_chunk_text as _semantic_chunk
 from app.embeddings.embedding_client import embed_batch
@@ -102,8 +97,7 @@ class IngestionReport:
     source_type: str
     pages_processed: int
     chunks_created: int
-    ocr_pages_count: int          # pages that were fully scanned (whole-page OCR)
-    image_ocr_pages_count: int    # text pages whose embedded images were OCR'd
+    ocr_pages_count: int
 
 
 @dataclass
@@ -112,7 +106,8 @@ class VideoIngestionReport:
     file_name: str
     source_type: str
     frames_ingested: int      # frames that survived OCR + de-duplication
-    chunks_created: int
+    transcript_segments: int = 0   # spoken segments captured via transcription
+    chunks_created: int = 0
 
 
 def ingest_pdf(pdf_bytes: bytes, file_name: str) -> IngestionReport:
@@ -120,8 +115,7 @@ def ingest_pdf(pdf_bytes: bytes, file_name: str) -> IngestionReport:
     Full PDF ingestion pipeline.
 
     Steps:
-      1. Extract text page-by-page (OCR fallback for scanned pages,
-         embedded-image OCR for text pages with pictures).
+      1. Extract text page-by-page (OCR fallback for scanned pages).
       2. Chunk each page (attaching page number to every chunk).
       3. Embed all chunks in one batch.
       4. Upsert to Qdrant with metadata.
@@ -137,13 +131,10 @@ def ingest_pdf(pdf_bytes: bytes, file_name: str) -> IngestionReport:
     # Step 1: extract pages -> list of (page_number, text, method)
     pages = extract_pdf_pages(pdf_bytes)
 
-    # Two OCR signals, counted separately so the report stays honest:
-    #   'ocr'          = whole page was a scan (full-page OCR)
-    #   'pdf_text+ocr' = text page whose embedded images we OCR'd (screenshots)
+    # Count how many pages required OCR fallback - useful signal for the report
+    # and for spotting scanned documents in the audit trail.
     ocr_pages_count = sum(1 for _, _, method in pages if method == "ocr")
-    image_ocr_pages_count = sum(1 for _, _, method in pages if method == "pdf_text+ocr")
-    logger.info("Extracted %d pages (%d full-page OCR, %d embedded-image OCR)",
-                len(pages), ocr_pages_count, image_ocr_pages_count)
+    logger.info("Extracted %d pages (%d via OCR)", len(pages), ocr_pages_count)
 
     # Step 2: chunk each page, tagging every chunk with its origin page number.
     all_chunks: list[str] = []
@@ -163,7 +154,6 @@ def ingest_pdf(pdf_bytes: bytes, file_name: str) -> IngestionReport:
             pages_processed=len(pages),
             chunks_created=0,
             ocr_pages_count=ocr_pages_count,
-            image_ocr_pages_count=image_ocr_pages_count,
         )
 
     # Step 3 + 4: embed and upsert (shared seam)
@@ -184,7 +174,6 @@ def ingest_pdf(pdf_bytes: bytes, file_name: str) -> IngestionReport:
         pages_processed=len(pages),
         chunks_created=n,
         ocr_pages_count=ocr_pages_count,
-        image_ocr_pages_count=image_ocr_pages_count,
     )
 
 
@@ -220,6 +209,33 @@ def ingest_video(video_path: str, file_name: str) -> VideoIngestionReport:
             all_timestamps.append(timestamp_seconds)
             all_frame_numbers.append(frame_number)
 
+    # Step 2b: transcribe the spoken audio (if enabled and the video has audio).
+    # Each transcript segment becomes a chunk tagged with its start timestamp,
+    # exactly like a frame chunk — so spoken content is searchable and citable.
+    transcript_segment_count = 0
+    if settings.TRANSCRIBE_VIDEO and settings.OPENAI_API_KEY:
+        try:
+            audio_path = extract_audio(video_path)
+            if audio_path is None:
+                logger.info("No audio track in '%s' - skipping transcription", file_name)
+            else:
+                try:
+                    segments = transcribe_audio(audio_path)
+                    transcript_segment_count = len(segments)
+                    logger.info("Transcribed %d segments from '%s'",
+                                len(segments), file_name)
+                    for start_seconds, seg_text in segments:
+                        for chunk in _chunk(seg_text):
+                            all_chunks.append(chunk)
+                            all_timestamps.append(start_seconds)
+                            all_frame_numbers.append(None)  # transcript has no frame
+                finally:
+                    Path(audio_path).unlink(missing_ok=True)  # clean up temp mp3
+        except Exception as exc:  # transcription is best-effort; never fail ingest
+            logger.warning("Transcription failed for '%s': %s", file_name, exc)
+    elif settings.TRANSCRIBE_VIDEO and not settings.OPENAI_API_KEY:
+        logger.info("TRANSCRIBE_VIDEO is on but no OPENAI_API_KEY - skipping transcription")
+
     # No readable frames -> nothing to embed.
     if not all_chunks:
         logger.warning("No readable text in '%s' - nothing to embed", file_name)
@@ -228,6 +244,7 @@ def ingest_video(video_path: str, file_name: str) -> VideoIngestionReport:
             file_name=file_name,
             source_type="video",
             frames_ingested=len(frames),
+            transcript_segments=transcript_segment_count,
             chunks_created=0,
         )
 
@@ -249,6 +266,7 @@ def ingest_video(video_path: str, file_name: str) -> VideoIngestionReport:
         file_name=file_name,
         source_type="video",
         frames_ingested=len(frames),
+        transcript_segments=transcript_segment_count,
         chunks_created=n,
     )
 

@@ -47,6 +47,13 @@ class Settings:
     # videos (slides change slowly); lower it for fast-changing content.
     VIDEO_SAMPLE_SECONDS: int = int(os.getenv("VIDEO_SAMPLE_SECONDS", "5"))
 
+    # Transcription (OpenAI Whisper) — turn a video's spoken audio into text.
+    # OPENAI_API_KEY is a secret: keep it in .env, never in .env.example or git.
+    OPENAI_API_KEY: str = os.getenv("OPENAI_API_KEY", "")
+    WHISPER_MODEL: str = os.getenv("WHISPER_MODEL", "whisper-1")
+    # Master switch: if false (or no key), ingestion skips transcription entirely.
+    TRANSCRIBE_VIDEO: bool = os.getenv("TRANSCRIBE_VIDEO", "true").lower() == "true"
+
     # LLM
     LLM_MODEL: str = _require("LLM_MODEL")
     LLM_TIMEOUT_SECONDS: int = int(os.getenv("LLM_TIMEOUT_SECONDS", "120"))

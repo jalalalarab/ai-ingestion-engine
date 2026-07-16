@@ -2,54 +2,60 @@
 
 A multimodal **RAG (Retrieval-Augmented Generation)** pipeline that turns messy source files — PDFs and videos — into clean, searchable knowledge, then answers questions about them with **cited sources** (page numbers for PDFs, timestamps for videos).
 
+For videos it goes further: it **reads the slides** (vision model), **transcribes the speech** (Whisper), can generate **Minutes of Meeting** and email them, and answers questions through a conversational **AI Agent** (in n8n).
+
 The focus of this project is the **ingestion engine**, not the chat: the pipeline that extracts, cleans, chunks, embeds, and stores content correctly. Good retrieval starts with good ingestion.
 
 ---
 
 ## What it does
 
-Upload a PDF or a video → the engine extracts the text (including OCR for scanned pages and video frames) → splits it into meaningful chunks with metadata → embeds each chunk → stores it in a vector database. Then you can search it semantically, or ask a natural-language question and get an answer grounded in the stored content, with the exact page or timestamp it came from.
+Upload a PDF or a video → the engine extracts the content → splits it into meaningful chunks with metadata → embeds each chunk → stores it in a vector database. Then you can search it semantically, ask a cited natural-language question, chat with an agent, or (for videos) generate emailed meeting minutes.
 
 | Input | What the engine does | Stored with |
 |---|---|---|
 | Normal PDF | Extract selectable text page by page | page number |
 | Scanned PDF | Render pages to images, run OCR | page number + `extraction_method` |
-| Video | Sample frames, OCR the on-screen text, skip near-duplicate frames | timestamp + frame number |
+| Video (frames) | Sample a frame every N seconds; a **vision model** reads on-screen text **and describes** the frame (OCR fallback); skip near-duplicates | timestamp + frame number |
+| Video (audio) | Extract audio and **transcribe the speech** (Whisper) into timestamped segments | timestamp |
 | Question | Embed it, retrieve top chunks, answer from them only | source citations |
+| Meeting video | Pull the transcript back and generate **Minutes of Meeting** (map-reduce for long ones) | emailed via n8n |
 
 ---
 
-## Architecture: one engine, two extractors
+## Architecture: one engine, many extractors
 
-PDF and video are handled by **different extractors** but flow into a **single shared downstream pipeline** — chunk → embed → store → search → answer. The two paths converge at a shared `_ingest_texts` seam in `ingestion_service.py`, so the core engine is written once.
+PDF and video are handled by **different extractors** but flow into a **single shared downstream pipeline** — chunk → embed → store → search → answer. The paths converge at a shared `_ingest_texts` seam in `ingestion_service.py`, so the core engine is written once.
 
 ```
-        PDF file                    Video file
-           │                            │
-   ┌───────▼────────┐          ┌────────▼─────────┐
-   │  PDF parser    │          │  Video parser    │
-   │  (PyMuPDF)     │          │  (OpenCV frames) │
-   │  + OCR fallback│          │  + Tesseract OCR │
-   │  (Tesseract)   │          │                  │
-   └───────┬────────┘          └────────┬─────────┘
-           │                            │
-           └────────────┬───────────────┘
-                        │   _ingest_texts  (shared seam)
-                        ▼
-              chunk → embed → store
-                        │
-                        ▼
-                 ┌──────────────┐
-                 │    Qdrant    │  vectors + metadata payloads
-                 └──────┬───────┘
-                        │
-              ┌─────────┴──────────┐
-              ▼                    ▼
-          /search               /ask
-      (semantic top-k)   (retrieve → LLM → answer + sources)
+        PDF file                         Video file
+           |                                 |
+   +-------v--------+          +-------------v--------------+
+   |  PDF parser    |          |  Video parser              |
+   |  (PyMuPDF)     |          |   - frames (OpenCV)        |
+   |  + OCR fallback|          |     -> vision describe     |
+   |  (Tesseract)   |          |        (OCR fallback)      |
+   |                |          |   - audio -> Whisper       |
+   +-------+--------+          +-------------+--------------+
+           |                                 |
+           +----------------+----------------+
+                            |   _ingest_texts  (shared seam)
+                            v
+                  chunk -> embed -> store
+                            |
+                            v
+                   +--------------+
+                   |    Qdrant    |  vectors + metadata payloads
+                   +------+-------+
+                          |
+          +-----------+---+----+-------------+
+          v           v        v             v
+       /search      /ask    /minutes    n8n AI Agent
+   (semantic top-k) (RAG)  (meeting     (chat -> /agent/search
+                            minutes)      -> cited answers)
 ```
 
-**One-sentence version:** the system turns PDFs and videos into searchable chunks, stores them in Qdrant, and lets an LLM answer questions with page or timestamp sources.
+**One-sentence version:** the system turns PDFs and videos into searchable chunks, stores them in Qdrant, and lets an LLM (or a chat agent) answer questions with page or timestamp sources — and can summarize meeting videos into emailed minutes.
 
 ---
 
@@ -58,52 +64,46 @@ PDF and video are handled by **different extractors** but flow into a **single s
 | Component | Choice | Why |
 |---|---|---|
 | API | **FastAPI** (uvicorn) | Async, auto-generated Swagger docs at `/docs` |
-| Vector DB | **Qdrant** (Docker) | Semantic search + metadata filtering; collection `content_chunks`, 768-dim, cosine |
+| Vector DB | **Qdrant** (Docker) | Semantic search + metadata filtering; `content_chunks`, 768-dim, cosine |
 | Embeddings | **Ollama** local — `nomic-embed-text` | Runs locally, 768-dim, no API cost |
-| LLM (answers) | **Ollama Cloud** — `gpt-oss:20b-cloud` | Capable model without local GPU |
-| OCR | **Tesseract** (pytesseract) | Scanned PDFs, images in PDFs, video frame text |
-| PDF parsing | **PyMuPDF** | Fast text extraction + page rasterization for OCR |
-| Video frames | **OpenCV** | Frame sampling from video |
-| Automation | **n8n** (Docker) | One webhook workflow that routes PDF vs video ingestion by file type |
+| LLM (answers, minutes) | **Ollama Cloud** — `gpt-oss:20b-cloud` | Capable model without local GPU |
+| Transcription | **OpenAI Whisper** (`whisper-1`) | Accurate speech-to-text with timestamps |
+| Vision (frame description) | **OpenAI** `gpt-4o-mini` | Reads on-screen text + describes visuals |
+| OCR (fallback) | **Tesseract** (pytesseract) | Scanned PDFs, images in PDFs, video frame text |
+| PDF parsing | **PyMuPDF** | Fast text extraction + page rasterization |
+| Video frames / audio | **OpenCV** + **ffmpeg** (imageio-ffmpeg) | Frame sampling; audio extraction |
+| Automation & agent | **n8n** (Docker) | Upload/ingest/minutes workflows + chat AI Agent |
 | Runtime | **Python 3.12** in `.venv` | |
+
+> **Note on the vision model:** the instructor suggested Qwen vision on Ollama Cloud, but that model required a paid subscription and a local Qwen vision model was too large for this machine — so frame description uses OpenAI `gpt-4o-mini` (reusing the Whisper key). Same capability; the vision client is an isolated module, so swapping models is a one-file change.
 
 ---
 
 ## Quickstart
 
-**Prerequisites:** Python 3.12, Docker, [Ollama](https://ollama.com), and Tesseract OCR installed on your machine.
+**Prerequisites:** Python 3.12, Docker, [Ollama](https://ollama.com), Tesseract OCR, and an **OpenAI API key** (for transcription + vision).
 
 ```bash
 # 1. Clone
 git clone https://github.com/jalalalarab/ai-ingestion-engine.git
 cd ai-ingestion-engine
 
-# 2. Start Qdrant and n8n as Docker containers (first-time setup — creates them)
-# Each command is a single line. (On Linux/macOS you may split with a trailing backslash;
-# on Windows PowerShell keep each command on one line, as below.)
+# 2. Start Qdrant and n8n (Docker)
 docker run -d --name qdrant -p 6333:6333 -p 6334:6334 -v qdrant_storage:/qdrant/storage qdrant/qdrant:latest
 docker run -d --name n8n -p 5678:5678 -v n8n_data:/home/node/.n8n docker.n8n.io/n8nio/n8n:latest
-
-# On later runs the containers already exist — don't run the above again.
-# Just start the existing ones (keeps all stored data):
-#   docker start qdrant n8n
+# daily use afterwards: docker start qdrant n8n
 
 # 3. Python environment
 python -m venv .venv
-# Windows PowerShell:
-.\.venv\Scripts\Activate.ps1
-# macOS/Linux:
-# source .venv/bin/activate
+.\.venv\Scripts\Activate.ps1        # Windows PowerShell
+# source .venv/bin/activate         # macOS/Linux
 pip install -r requirements.txt
 
-# 4. Config — copy the example and adjust if needed (defaults work out of the box)
-copy .env.example .env         # Windows
-# cp .env.example .env         # macOS/Linux
+# 4. Config — copy the example and fill in your OPENAI_API_KEY
+copy .env.example .env              # Windows  (cp on macOS/Linux)
 
-# 5. Pull the embedding model into local Ollama
+# 5. Pull the embedding model; sign in for cloud LLM
 ollama pull nomic-embed-text
-# The answer model (gpt-oss:20b-cloud) runs via Ollama Cloud.
-# Sign in once so the local daemon can reach cloud models:
 ollama signin
 
 # 6. Run the API
@@ -112,21 +112,7 @@ uvicorn app.main:app --reload
 
 Open **http://localhost:8000/docs** for the interactive Swagger UI.
 
-### Configuration (`.env`)
-
-| Variable | Default | Purpose |
-|---|---|---|
-| `QDRANT_URL` | `http://localhost:6333` | Qdrant HTTP endpoint |
-| `QDRANT_COLLECTION` | `content_chunks` | Collection name |
-| `OLLAMA_BASE_URL` | `http://localhost:11434` | Local Ollama daemon |
-| `EMBEDDING_MODEL` | `nomic-embed-text` | Embedding model |
-| `EMBEDDING_DIM` | `768` | Vector size (pinned; must match the collection) |
-| `CHUNK_SIZE_TOKENS` | `700` | Target chunk size |
-| `CHUNK_OVERLAP_TOKENS` | `100` | Overlap between chunks |
-| `CHUNKING_STRATEGY` | `semantic` | `semantic` (meaning-based splits) or `simple` (fixed-size) |
-| `MAX_PDF_MB` | `50` | Upload size cap |
-| `LLM_MODEL` | `gpt-oss:20b-cloud` | Answer model |
-| `LLM_TIMEOUT_SECONDS` | `120` | LLM call timeout |
+All settings are documented in **`.env.example`** — including `OPENAI_API_KEY` (required for transcription/vision), `VIDEO_SAMPLE_SECONDS`, `TRANSCRIBE_VIDEO`, `DESCRIBE_FRAMES`, `VISION_MODEL`, and `MOM_BATCH_CHARS`. To run without OpenAI, set `TRANSCRIBE_VIDEO=false` and `DESCRIBE_FRAMES=false` (video falls back to Tesseract OCR only).
 
 ---
 
@@ -135,78 +121,54 @@ Open **http://localhost:8000/docs** for the interactive Swagger UI.
 | Method | Route | Purpose |
 |---|---|---|
 | `GET` | `/health` | Liveness check |
-| `POST` | `/ingest/pdf` | Upload + ingest a PDF (with OCR fallback) |
-| `POST` | `/ingest/video` | Upload + ingest a video (frame OCR) |
-| `POST` | `/search` | Semantic top-k retrieval (test retrieval before answers) |
-| `POST` | `/ask` | Full RAG: retrieve → LLM → answer + sources |
+| `POST` | `/ingest/pdf` | Upload + ingest a PDF (OCR fallback for scans) |
+| `POST` | `/ingest/video` | Upload + ingest a video (vision frame description + audio transcript) |
+| `POST` | `/search` | Semantic top-k retrieval |
+| `POST` | `/ask` | Full RAG: retrieve -> LLM -> answer + sources |
+| `POST` | `/agent/search` | Agent-friendly retrieval: cited chunk text for the n8n AI Agent |
+| `POST` | `/minutes/{file_id}` | Generate Minutes of Meeting from a video's transcript |
 
-**Example — ingest a PDF:**
-```bash
-curl.exe -F "file=@storage/uploads/mydoc.pdf" http://localhost:8000/ingest/pdf
-```
+**Example — ingest a video:**
 ```json
-{ "file_id": "ab10ecf2-...", "file_name": "mydoc.pdf", "source_type": "pdf",
-  "pages_processed": 10, "chunks_created": 10, "ocr_pages_count": 10 }
+// POST /ingest/video
+{ "file_id": "06a3...", "source_type": "video",
+  "frames_ingested": 8, "transcript_segments": 12, "chunks_created": 22 }
 ```
 
-**Example — ask a question:**
+**Example — Minutes of Meeting:**
 ```json
-// POST /ask
-{ "question": "What did the document say about revenue growth?" }
-// -> { "answer": "...", "sources": [ { "file_name": "...", "page_number": 5 } ] }
+// POST /minutes/06a3...
+{ "file_name": "Meeting.mp4", "minutes": "1. Overview...\n5. Action Items...",
+  "batches_used": 1, "method": "single-pass" }
 ```
-
----
-
-## n8n automation
-
-An n8n workflow triggers ingestion automatically over a webhook, instead of calling the API by hand. The exported workflow lives at **`n8n_workflows/ingest_webhook.json`**.
-
-**How to use it:**
-1. Open n8n at `http://localhost:5678`.
-2. Import the workflow: **⋯ menu → Import from File →** select `n8n_workflows/ingest_webhook.json`.
-3. **Activate** the workflow (the toggle, top-right) so the production webhook URL is live.
-4. POST a file to the webhook — it routes to the right endpoint by file type:
-   ```bash
-   curl.exe -F "file=@storage/uploads/mydoc.pdf" http://localhost:5678/webhook/ingest
-   ```
-
-The workflow is three nodes: **Webhook** (receives the file) → **HTTP Request** (forwards it to FastAPI at `host.docker.internal:8000`, choosing `/ingest/pdf` or `/ingest/video` from the file type via a dynamic URL) → **Respond to Webhook** (returns the result). It uses `host.docker.internal` rather than `localhost` because n8n runs in a container and must reach FastAPI on the host.
-
-> Note: the production URL (`/webhook/ingest`) only works when the workflow is Activated. For a one-off test without activating, use `/webhook-test/ingest` right after clicking "Listen for test event".
 
 ---
 
 ## How it works (the parts that make it not a toy)
 
-**Semantic chunking.** Instead of slicing text at a fixed character count, the default chunker (`semantic`) embeds every sentence and measures where the *meaning* shifts — cosine distance between neighbouring sentences — then splits at the biggest topic jumps (the top percentile of distances in that document, so it adapts per-file rather than using a fragile fixed threshold). A size cap prevents runaway chunks, and it falls back to fixed-size chunking on very short or very long pages. The strategy is switchable via `CHUNKING_STRATEGY` (`semantic` or `simple`) — the simple fixed-size chunker is kept as a fast, dependency-free fallback. Sentence embeddings run concurrently so this stays fast even on CPU-only Ollama.
+**Multimodal video ingestion.** A video is understood three ways, all timestamped: (1) frames sampled every `VIDEO_SAMPLE_SECONDS` (default 5) go to a **vision model** that reads on-screen text *and* describes the frame — charts, layout, scene — falling back to Tesseract OCR if vision is off or a call fails; (2) the **audio track** is extracted with ffmpeg and transcribed by **Whisper** into timestamped segments; (3) near-duplicate frames are dropped. So you can ask about what was *shown* and what was *said*, with a timestamp back.
 
-**OCR fallback.** If a PDF page yields almost no selectable text (a scanned page), the engine renders that page to an image and runs Tesseract OCR instead — so scanned documents are still searchable. Each chunk records its `extraction_method` for debugging.
+**Minutes of Meeting with map-reduce.** `/minutes/{file_id}` pulls a video's full transcript from Qdrant and produces structured minutes (Overview, Attendees, Key Points, Decisions, Action Items). Because a long meeting's transcript can exceed the LLM's **context window**, it uses **map-reduce**: if the transcript fits, one call; if not, summarize batches independently (*map*), then combine the partial summaries (*reduce*). Works for a 2-minute stand-up or a 2-hour meeting.
 
-**Embedded-image OCR.** Even on normal text pages, images (screenshots, charts) can contain text the text layer doesn't include. For text pages that also carry sizeable images, the engine extracts each embedded image and OCRs it too, merging that text in — so figures and labels living *inside* a picture become searchable. Tiny images (icons/logos, under 200px) are skipped to avoid noise. The two OCR paths are reported separately: `ocr_pages_count` (fully scanned pages) and `image_ocr_pages_count` (text pages whose images were OCR'd), so a digital PDF with screenshots honestly shows `ocr=0, image_ocr>0`.
+**Conversational AI Agent (n8n).** A chat-triggered agent uses a custom tool that calls `/agent/search`, retrieving cited chunk text from Qdrant. It answers only from retrieved passages and cites file + page/timestamp. The retrieved chunk text is visible in n8n's execution log, so every answer is auditable. Windowed memory keeps recent turns for follow-ups without overflowing the context window.
 
-**Content-hash deduplication.** The `file_id` is derived from a SHA-256 hash of the file's content (folded into a UUID), not a random value. Because Qdrant point IDs are built from the `file_id`, re-ingesting the same file lands on the same point IDs and **overwrites in place** instead of creating duplicates. Same file in → same chunks, no bloat. Edit the file → the hash changes → it's correctly treated as new.
+**Semantic chunking.** The default chunker embeds every sentence, finds where the *meaning* shifts (cosine distance between neighbours), and splits at the biggest topic jumps — adapting per file rather than using a fixed threshold. Switchable via `CHUNKING_STRATEGY`. Sentence embeddings run concurrently to stay fast on CPU-only Ollama.
 
-**Two-layer anti-hallucination guard.** On `/ask`:
-1. **Confidence guard (code):** if the best retrieved chunk's similarity score is below a `0.45` threshold, the engine does **not** call the LLM at all — it returns a "not found in the provided documents" style answer. Weak context never becomes a confident wrong answer.
-2. **Prompt guard (instruction):** the system prompt tells the model to answer **only** from the provided context and to say it doesn't know otherwise.
+**Content-hash deduplication.** The `file_id` is a SHA-256 hash of the file content (folded into a UUID). Qdrant point IDs are built from it, so re-ingesting the same file **overwrites in place** instead of duplicating. Edit the file -> hash changes -> treated as new.
 
-Every answer carries its **sources** (page number for PDFs, timestamp for videos), so answers are auditable.
+**Two-layer anti-hallucination guard.** On `/ask`: (1) a **confidence guard** — if the best chunk's score is below `0.45`, the LLM is never called; (2) a **prompt guard** — the system prompt restricts the model to the provided context. Every answer carries its sources.
 
 ---
 
-## Build phases
+## n8n workflows
 
-The project was built incrementally, one working slice at a time:
+Exported workflow JSON lives in `n8n_workflows/`:
 
-- **Phase 0** — Scaffold, Docker services, `/health`, Qdrant collection at 768 dims
-- **Phase 1** — PDF text ingestion → chunk → embed → store (`POST /ingest/pdf`)
-- **Phase 2** — Semantic search (`POST /search`)
-- **Phase 3** — RAG answers with anti-hallucination guard + cited sources (`POST /ask`)
-- **Phase 4** — OCR fallback for scanned PDFs (Tesseract)
-- **Phase 5** — Video ingestion: frame sampling + OCR + near-duplicate skip (`POST /ingest/video`)
-- **Phase 6** — n8n automation: one webhook workflow that routes PDF vs video ingestion by file type (dynamic endpoint URL)
-- **Phase 7** — Logging, content-hash dedup, semantic chunking (concurrent embeddings), embedded-image OCR, docs
+- **Ingest webhook** (`ingest_webhook.json`) — POST a file to a webhook; routes to `/ingest/pdf` or `/ingest/video` by file type.
+- **AI Agent** (`ai_agent_workflow.json`) — chat trigger -> AI Agent (Ollama chat model + memory) -> HTTP tool calling `/agent/search`. Answers from Qdrant with citations.
+- **Upload + Minutes email** (`upload_ingest_minutes_workflow.json`) — a form to upload a PDF or video -> ingest -> if it's a video, generate minutes and email them via Gmail.
+
+n8n runs in Docker, so it reaches the host API via `host.docker.internal:8000` (not `localhost`).
 
 ---
 
@@ -216,14 +178,18 @@ The project was built incrementally, one working slice at a time:
 app/
   main.py                  # FastAPI entry point
   config.py                # all config from .env, no hardcoded values
-  logging_config.py        # one-call logging setup
-  api/                     # routes_health, routes_ingest, routes_search, routes_ask
-  services/                # ingestion_service, search_service, answer_service
-  parsers/                 # pdf_parser, ocr_parser, video_parser
-  chunking/                # simple_chunker (fixed-size) + semantic_chunker (embedding-similarity)
+  api/                     # routes_health, routes_ingest, routes_search,
+                           #   routes_ask, routes_agent, routes_minutes
+  services/                # ingestion_service, search_service, answer_service,
+                           #   minutes_service
+  parsers/                 # pdf_parser, ocr_parser, video_parser,
+                           #   audio_extractor, vision_client
+  transcription/           # transcription_client (Whisper)
+  chunking/                # simple_chunker + semantic_chunker
   embeddings/              # embedding_client
   vector_store/            # qdrant_store  (the only module that talks to Qdrant)
   llm/                     # llm_client
+n8n_workflows/             # exported workflow JSON
 storage/uploads/           # uploaded files (gitignored)
 screenshots/               # proof-of-work evidence
 tests/                     # test artifacts + generators
@@ -235,18 +201,19 @@ tests/                     # test artifacts + generators
 
 Honest about what an MVP this is:
 
-- **No background job queue** — very large videos/PDFs are processed in the request; long files could hit HTTP timeouts. Next: async job queue with status polling.
-- **Regex sentence splitting** — the semantic chunker splits sentences with a regex, which can mis-handle abbreviations. A proper NLP sentence tokenizer (nltk/spaCy) would be more robust, at the cost of a dependency.
-- **Embedded-image OCR is imperfect** — text inside screenshots is captured, but small or low-resolution figures may read incorrectly or be missed. When a figure isn't captured, the confidence guard correctly returns "not found" rather than guessing.
-- **Single embedding model, English-focused OCR** — Tesseract language packs and multilingual embeddings would extend it.
-- **No auth on the API** — fine for local/demo; would add API keys before any real deployment.
-- **Vision captions for frames** are stubbed as a future step — currently video relies on frame OCR only.
+- **No background job queue** — large videos are processed in the request; long files (many frames x vision calls, plus transcription) can be slow or hit HTTP timeouts. Next: async job queue with status polling.
+- **Cloud dependency & cost** — transcription and vision call OpenAI (small per-video cost); the answer LLM uses Ollama Cloud, which can occasionally return transient 5xx errors. Vision falls back to OCR on failure; other calls would benefit from retries.
+- **Minutes are generated on demand**, not stored back in Qdrant — so the agent answers from the raw transcript, not the polished minutes. Storing minutes as chunks is an easy future addition.
+- **Regex sentence splitting** in the semantic chunker can mis-handle abbreviations; a proper NLP tokenizer would be more robust.
+- **No auth on the API** — fine for local/demo; would add API keys before deployment.
 
 ---
 
 ## What I learned building this
 
-- Designing a pipeline around a **shared seam** so two very different inputs (PDF, video) reuse the same embed/store/search core.
-- Why **idempotency** matters in a data pipeline, and how a content hash gives it for free.
-- Practical **RAG guardrails** — retrieval confidence thresholds and prompt constraints — to stop confident-but-wrong answers.
-- Wiring **Docker networking** correctly (n8n in a container reaching FastAPI on the host via `host.docker.internal`, not `localhost`).
+- Designing a pipeline around a **shared seam** so very different inputs (PDF, video frames, audio) reuse the same embed/store/search core.
+- Treating the **context window** as a first-class constraint — RAG retrieval for questions, **map-reduce** for whole-transcript summarization.
+- The difference between **retrieval and memory** in an agent, and why documents belong in the vector store, not chat memory.
+- Practical **RAG guardrails** — confidence thresholds and prompt constraints — to stop confident-but-wrong answers.
+- **Adapting under constraints** — swapping a gated/heavy vision model for an available one without touching the rest of the pipeline (isolated client module).
+- Wiring **Docker networking** correctly (n8n reaching the host via `host.docker.internal`).

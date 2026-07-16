@@ -58,6 +58,14 @@ class Settings:
     # map-reduce path kicks in (~4 chars/token; 12000 chars ~= 3000 tokens input).
     MOM_BATCH_CHARS: int = int(os.getenv("MOM_BATCH_CHARS", "12000"))
 
+    # Vision — describe video frames with a vision model (reads text + describes
+    # visuals). Uses OpenAI gpt-4o-mini (reuses the Whisper key); Qwen on Ollama
+    # Cloud needed a paid subscription and local Qwen was too large.
+    # If DESCRIBE_FRAMES is false, ingestion uses OCR only (the old behavior).
+    VISION_MODEL: str = os.getenv("VISION_MODEL", "gpt-4o-mini")
+    VISION_TIMEOUT_SECONDS: int = int(os.getenv("VISION_TIMEOUT_SECONDS", "120"))
+    DESCRIBE_FRAMES: bool = os.getenv("DESCRIBE_FRAMES", "true").lower() == "true"
+
     # LLM
     LLM_MODEL: str = _require("LLM_MODEL")
     LLM_TIMEOUT_SECONDS: int = int(os.getenv("LLM_TIMEOUT_SECONDS", "120"))

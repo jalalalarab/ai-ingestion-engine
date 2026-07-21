@@ -76,6 +76,23 @@ def make_point_id(file_id: str, chunk_index: int) -> str:
     return str(uuid5(NAMESPACE_URL, f"{file_id}:{chunk_index}"))
 
 
+def _citation_label(file_name: str, page_num: int | None, ts: int | None) -> str:
+    """
+    Build a human-readable citation: page for PDFs, MM:SS (or H:MM:SS) for videos.
+
+    This mirrors what the old /agent/search tool produced, so a reader that only
+    sees the metadata (like n8n's native Qdrant node) can still cite cleanly.
+    """
+    if page_num is not None:
+        return f"{file_name} — p.{page_num}"
+    if ts is not None:
+        m, s = divmod(int(ts), 60)
+        h, m = divmod(m, 60)
+        stamp = f"{h}:{m:02d}:{s:02d}" if h else f"{m:02d}:{s:02d}"
+        return f"{file_name} — {stamp}"
+    return file_name
+
+
 def upsert_chunks(
     file_id: str,
     file_name: str,
@@ -94,6 +111,14 @@ def upsert_chunks(
     PDF chunks carry page_number. Video chunks carry timestamp_seconds and
     frame_number instead — passed via the optional `timestamps`/`frame_numbers`
     lists. When those are None (PDF path) the fields are simply omitted.
+
+    Each point's payload keeps its metadata fields FLAT at the top level (what our
+    own Python readers use: search(), get_chunks_by_file_id(), minutes, etc.) AND
+    carries a nested `metadata` object that duplicates them. The nested copy exists
+    because LangChain-based readers — like n8n's native Qdrant Vector Store node —
+    reconstruct a result's metadata from ONE payload key (`metadata`). Without it,
+    those readers see empty metadata and lose citations, even though the text is
+    fine. The nested `metadata.citation` field is a ready-made source label.
     """
     if not (len(chunks) == len(vectors) == len(page_numbers)):
         raise ValueError(
@@ -108,6 +133,22 @@ def upsert_chunks(
     client = get_client()
     points = []
     for i, (chunk_text, vector, page_num) in enumerate(zip(chunks, vectors, page_numbers)):
+        ts = timestamps[i] if timestamps is not None else None
+        fr = frame_numbers[i] if frame_numbers is not None else None
+
+        # Nested metadata object — this is what LangChain / the n8n native Qdrant
+        # node reads. Keep it in sync with the flat fields below.
+        metadata = {
+            "file_id": file_id,
+            "file_name": file_name,
+            "source_type": source_type,
+            "chunk_index": i,
+            "page_number": page_num,
+            "timestamp_seconds": ts,
+            "frame_number": fr,
+            "citation": _citation_label(file_name, page_num, ts),
+        }
+
         payload = {
             "file_id": file_id,
             "file_name": file_name,
@@ -115,8 +156,9 @@ def upsert_chunks(
             "chunk_index": i,
             "page_number": page_num,
             "text": chunk_text,  # store the text so we can build LLM prompts later
+            "metadata": metadata,  # nested copy for LangChain / n8n native node
         }
-        # Video-only metadata — only added when present.
+        # Video-only metadata — only added when present (flat, for our readers).
         if timestamps is not None:
             payload["timestamp_seconds"] = timestamps[i]
         if frame_numbers is not None:

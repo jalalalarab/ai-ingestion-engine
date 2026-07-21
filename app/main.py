@@ -14,6 +14,7 @@ from app.api.routes_minutes import router as minutes_router
 from app.api.routes_documents import router as documents_router
 from app.api.routes_extract import router as extract_router
 from app.api.routes_graph import router as graph_router
+from app.api.routes_graphrag import router as graphrag_router
 
 # Configure logging FIRST, before any router code runs or logs. Anything
 # imported above/below can then use logging.getLogger(__name__) and it just
@@ -44,3 +45,4 @@ app.include_router(minutes_router)
 app.include_router(documents_router)
 app.include_router(extract_router)
 app.include_router(graph_router)
+app.include_router(graphrag_router)

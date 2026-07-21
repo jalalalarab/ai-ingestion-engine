@@ -115,3 +115,73 @@ def clear_all() -> None:
     driver = get_driver()
     with driver.session() as session:
         session.run("MATCH (n) DETACH DELETE n")
+
+
+def find_entities(names: list[str]) -> list[str]:
+    """
+    Resolve a list of candidate entity names to actual node names in the graph.
+
+    Case-insensitive and fuzzy: a candidate matches a node if either contains the
+    other (so "proforma" finds "Proforma", and "size order" finds "Size Order").
+    Returns the DISTINCT real node names that matched — these are the anchors we
+    traverse from.
+    """
+    if not names:
+        return []
+
+    cypher = """
+    UNWIND $names AS candidate
+    MATCH (e:Entity)
+    WHERE toLower(e.name) CONTAINS toLower(candidate)
+       OR toLower(candidate) CONTAINS toLower(e.name)
+    RETURN DISTINCT e.name AS name
+    """
+    driver = get_driver()
+    with driver.session() as session:
+        rows = session.run(cypher, names=names)
+        return [r["name"] for r in rows]
+
+
+def neighborhood_triples(entity_names: list[str], hops: int = 2, limit: int = 60) -> list[dict]:
+    """
+    Traverse the graph outward from the given entities and return the triples found.
+
+    Walks up to `hops` relationships away from each anchor entity (both directions),
+    collecting the (subject, predicate, object) triples along those paths. This is
+    the graph half of GraphRAG: instead of similar text, it returns the RELATIONSHIP
+    CHAINS around the entities a question mentions — e.g. from "Proforma" it pulls
+    Proforma→Size Order→Delivery Out→Sales Transaction.
+
+    Args:
+        entity_names: resolved node names (from find_entities).
+        hops: how many relationships to traverse out (2 catches most useful chains).
+        limit: safety cap on triples returned, so a hub node can't flood context.
+
+    Returns:
+        A list of {subject, predicate, object} dicts, de-duplicated.
+    """
+    if not entity_names:
+        return []
+
+    # Variable-length path up to `hops`, undirected traversal so we catch chains
+    # that point toward the anchor as well as away from it. We return each edge's
+    # endpoints and predicate. `hops` is inlined (validated int) because Cypher
+    # can't parameterize the path-length bound.
+    hops = max(1, min(int(hops), 4))  # clamp to a sane range
+    cypher = f"""
+    MATCH (a:Entity)
+    WHERE a.name IN $names
+    MATCH path = (a)-[:REL*1..{hops}]-(b:Entity)
+    WITH relationships(path) AS rels
+    UNWIND rels AS r
+    WITH startNode(r) AS s, r AS r, endNode(r) AS o
+    RETURN DISTINCT s.name AS subject, r.predicate AS predicate, o.name AS object
+    LIMIT $limit
+    """
+    driver = get_driver()
+    with driver.session() as session:
+        rows = session.run(cypher, names=entity_names, limit=limit)
+        return [
+            {"subject": r["subject"], "predicate": r["predicate"], "object": r["object"]}
+            for r in rows
+        ]

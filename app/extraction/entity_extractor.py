@@ -40,7 +40,11 @@ _EXTRACTION_PROMPT = (
     "'Proforma', 'Size Order' in English even inside Arabic sentences). Never "
     "create separate Arabic and English nodes for the same thing.\n"
     "- Use the SAME name every time you refer to the same entity (so it collapses "
-    "to one node).\n\n"
+    "to one node).\n"
+    "- Use the FULL, SPECIFIC name, never a shortened form: write 'Sales "
+    "Transaction' not 'Sales', 'Delivery Out' not 'Delivery', 'Size Order' not "
+    "'Order', 'Sales Invoice' not 'Invoice'. Shortened forms create duplicate "
+    "nodes for the same thing.\n\n"
     "PREDICATE RULES (the relationship):\n"
     "- Choose the SINGLE best-fit predicate from THIS fixed list, and use it "
     "exactly (lower_snake_case):\n"
@@ -94,21 +98,36 @@ def _extract_one(client, text: str) -> list[dict]:
     return clean
 
 
+# Known short-form -> canonical mappings. A deterministic backstop for when the
+# LLM slips and emits a shortened entity name despite the prompt rule. Keyed by
+# lowercased name. This only fixes synonyms we KNOW about; general entity
+# resolution (matching unseen synonyms) is future work.
+_CANONICAL = {
+    "sales": "Sales Transaction",
+    "delivery": "Delivery Out",
+    "order": "Size Order",
+    "invoice": "Sales Invoice",
+    "proforma invoice": "Proforma",
+    "size transaction": "Size Transaction",
+}
+
+
 def _norm_entity(name: str) -> str:
     """
     Safety-net normalization for entity names, in case the model slips on the
-    casing rule. Collapses whitespace and Title-cases snake_case/lowercase names
-    so 'sales_transaction' and 'Sales Transaction' become one node. Leaves names
-    that already contain uppercase (acronyms, proper multi-word) mostly intact.
+    casing/full-name rules. Collapses whitespace, de-snakes, Title-cases
+    lowercase names, then applies the canonical synonym map so known short forms
+    (e.g. 'Sales' -> 'Sales Transaction') resolve to one node.
     """
     name = " ".join(name.replace("_", " ").split())  # collapse ws + de-snake
     if not name:
         return ""
-    # If it's all-lowercase, Title-case it. If it already has capitals
-    # (e.g. 'TTC Price', 'Inventory Out'), keep as-is to preserve acronyms.
+    # Title-case all-lowercase names; keep names that already have capitals
+    # (acronyms like 'TTC Price', proper multi-word like 'Inventory Out') intact.
     if name.islower():
-        return name.title()
-    return name
+        name = name.title()
+    # Canonicalize known short-form synonyms (case-insensitive lookup).
+    return _CANONICAL.get(name.lower(), name)
 
 
 def _batch_text(segments: list[str], batch_chars: int) -> list[str]:

@@ -249,6 +249,53 @@ def get_chunks_by_file_id(
     return results
 
 
+def list_documents() -> list[dict]:
+    """
+    Return the distinct files ingested into the collection.
+
+    Scrolls every point and collapses them by file_id, so each ingested file
+    appears once with its name, type, and how many chunks it produced. Used by
+    the /documents endpoint so a human (or an agent) can look up a file by name
+    instead of needing its UUID.
+
+    Returns:
+        A list of dicts: {file_id, file_name, source_type, chunk_count},
+        sorted by file_name for stable, readable output.
+    """
+    client = get_client()
+
+    # file_id -> aggregated info
+    docs: dict[str, dict] = {}
+    offset = None
+    while True:
+        points, offset = client.scroll(
+            collection_name=settings.QDRANT_COLLECTION,
+            limit=256,
+            offset=offset,
+            with_payload=True,
+            with_vectors=False,  # metadata only — we don't need the vectors
+        )
+        for p in points:
+            payload = p.payload or {}
+            fid = payload.get("file_id")
+            if fid is None:
+                continue
+            if fid not in docs:
+                docs[fid] = {
+                    "file_id": fid,
+                    "file_name": payload.get("file_name"),
+                    "source_type": payload.get("source_type"),
+                    "chunk_count": 0,
+                }
+            docs[fid]["chunk_count"] += 1
+        if offset is None:  # no more pages
+            break
+
+    result = list(docs.values())
+    result.sort(key=lambda d: (d.get("file_name") or "").lower())
+    return result
+
+
 def search(
     query_vector: list[float],
     top_k: int = 5,

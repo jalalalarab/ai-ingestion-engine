@@ -76,5 +76,9 @@ class Settings:
     # OCR (Windows needs an explicit tesseract.exe path; on Linux/Mac PATH usually finds it)
     TESSERACT_CMD: str = os.getenv("TESSERACT_CMD", "")
 
+    NEO4J_URI: str = _require("NEO4J_URI")
+    NEO4J_USER: str = _require("NEO4J_USER")
+    NEO4J_PASSWORD: str = _require("NEO4J_PASSWORD")
+
 
 settings = Settings()

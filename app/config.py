@@ -65,6 +65,9 @@ class Settings:
     VISION_MODEL: str = os.getenv("VISION_MODEL", "gpt-4o-mini")
     VISION_TIMEOUT_SECONDS: int = int(os.getenv("VISION_TIMEOUT_SECONDS", "120"))
     DESCRIBE_FRAMES: bool = os.getenv("DESCRIBE_FRAMES", "true").lower() == "true"
+    EXTRACTION_MODEL: str = os.getenv("EXTRACTION_MODEL", "gpt-4o-mini")
+    EXTRACTION_TIMEOUT_SECONDS: int = int(os.getenv("EXTRACTION_TIMEOUT_SECONDS", "120"))
+    EXTRACTION_BATCH_CHARS: int = int(os.getenv("EXTRACTION_BATCH_CHARS", "6000"))
 
     # LLM
     LLM_MODEL: str = _require("LLM_MODEL")

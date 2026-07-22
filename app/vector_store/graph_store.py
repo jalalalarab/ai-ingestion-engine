@@ -185,3 +185,97 @@ def neighborhood_triples(entity_names: list[str], hops: int = 2, limit: int = 60
             {"subject": r["subject"], "predicate": r["predicate"], "object": r["object"]}
             for r in rows
         ]
+
+
+# ---- Phase E: community detection (GDS Louvain) ----
+
+_GRAPH_PROJECTION = "entity_graph"  # name of the in-memory GDS projection
+
+
+def detect_communities() -> list[dict]:
+    """
+    Detect communities in the graph using the GDS Louvain algorithm.
+
+    GDS works on an in-memory PROJECTION of the stored graph, not the stored graph
+    directly. So we: (1) drop any stale projection, (2) project all :Entity nodes
+    and :REL edges (undirected, since community structure ignores direction),
+    (3) run Louvain and WRITE a `community` id onto each node, (4) read the nodes
+    back grouped by community, with the triples internal to each community.
+
+    Louvain groups nodes so links WITHIN a group are dense and links BETWEEN groups
+    are sparse (modularity optimization) — finding the dense clumps a simple
+    connected-components split would miss.
+
+    Returns a list of communities, each:
+        {"community": <id>, "entities": [names...], "triples": [{s,p,o}...]}
+    ordered largest-first.
+    """
+    driver = get_driver()
+    with driver.session() as session:
+        # 1. Drop a stale projection if it exists (idempotent re-runs).
+        session.run(
+            "CALL gds.graph.exists($name) YIELD exists "
+            "WITH exists WHERE exists "
+            "CALL gds.graph.drop($name) YIELD graphName RETURN graphName",
+            name=_GRAPH_PROJECTION,
+        )
+
+        # 2. Project :Entity nodes and :REL relationships as UNDIRECTED.
+        session.run(
+            """
+            CALL gds.graph.project(
+                $name,
+                'Entity',
+                { REL: { orientation: 'UNDIRECTED' } }
+            )
+            """,
+            name=_GRAPH_PROJECTION,
+        )
+
+        # 3. Run Louvain, writing the community id back onto each node as `community`.
+        session.run(
+            """
+            CALL gds.louvain.write($name, { writeProperty: 'community' })
+            YIELD communityCount, modularity
+            RETURN communityCount, modularity
+            """,
+            name=_GRAPH_PROJECTION,
+        )
+
+        # 4. Read nodes grouped by their assigned community.
+        rows = session.run(
+            """
+            MATCH (e:Entity)
+            WHERE e.community IS NOT NULL
+            RETURN e.community AS community, collect(e.name) AS entities
+            ORDER BY size(entities) DESC
+            """
+        )
+        communities = [{"community": r["community"], "entities": r["entities"]} for r in rows]
+
+        # 5. For each community, gather the triples whose BOTH endpoints are inside it
+        #    (the relationships that define that cluster).
+        for comm in communities:
+            names = comm["entities"]
+            trip_rows = session.run(
+                """
+                MATCH (s:Entity)-[r:REL]->(o:Entity)
+                WHERE s.name IN $names AND o.name IN $names
+                RETURN DISTINCT s.name AS subject, r.predicate AS predicate, o.name AS object
+                """,
+                names=names,
+            )
+            comm["triples"] = [
+                {"subject": t["subject"], "predicate": t["predicate"], "object": t["object"]}
+                for t in trip_rows
+            ]
+
+        # 6. Clean up the in-memory projection.
+        session.run(
+            "CALL gds.graph.exists($name) YIELD exists "
+            "WITH exists WHERE exists "
+            "CALL gds.graph.drop($name) YIELD graphName RETURN graphName",
+            name=_GRAPH_PROJECTION,
+        )
+
+    return communities

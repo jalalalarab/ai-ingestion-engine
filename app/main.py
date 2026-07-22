@@ -15,6 +15,7 @@ from app.api.routes_documents import router as documents_router
 from app.api.routes_extract import router as extract_router
 from app.api.routes_graph import router as graph_router
 from app.api.routes_graphrag import router as graphrag_router
+from app.api.routes_communities import router as communities_router
 
 # Configure logging FIRST, before any router code runs or logs. Anything
 # imported above/below can then use logging.getLogger(__name__) and it just
@@ -46,3 +47,4 @@ app.include_router(documents_router)
 app.include_router(extract_router)
 app.include_router(graph_router)
 app.include_router(graphrag_router)
+app.include_router(communities_router)

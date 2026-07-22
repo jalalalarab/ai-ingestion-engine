@@ -21,7 +21,7 @@ import json
 import logging
 
 from app.config import settings
-from app.embeddings.embedding_client import embed_text
+from app.embeddings.embedding_client import embed_text, embed_batch
 from app.vector_store import qdrant_store, graph_store
 
 logger = logging.getLogger(__name__)
@@ -72,11 +72,50 @@ def _vector_context(question: str, top_k: int) -> list[dict]:
     return qdrant_store.search(qvec, top_k=top_k)
 
 
-def _graph_context(question: str, hops: int) -> dict:
-    """Graph path: question -> entities -> resolved nodes -> neighborhood triples."""
+def _cosine(a: list[float], b: list[float]) -> float:
+    """Cosine similarity between two vectors."""
+    dot = sum(x * y for x, y in zip(a, b))
+    na = sum(x * x for x in a) ** 0.5
+    nb = sum(y * y for y in b) ** 0.5
+    return dot / (na * nb) if na and nb else 0.0
+
+
+def _rank_triples(question: str, triples: list[dict], keep: int) -> list[dict]:
+    """
+    Keep only the triples most relevant to the question.
+
+    A 2-hop traversal grabs the whole neighborhood around the anchor entities,
+    which on a well-connected node pulls in plenty of facts unrelated to what was
+    asked (e.g. every field of Sales Invoice when the question was about Proforma).
+    So we embed the question and each triple (as readable text) and keep the top
+    `keep` by cosine similarity — the graph half of the context stays focused.
+
+    Best-effort: if embedding fails, fall back to the unranked list rather than
+    losing the graph context entirely.
+    """
+    if len(triples) <= keep:
+        return triples
+    try:
+        texts = [f"{t['subject']} {t['predicate'].replace('_', ' ')} {t['object']}" for t in triples]
+        vecs = embed_batch([question] + texts)
+        qvec, tvecs = vecs[0], vecs[1:]
+        scored = sorted(
+            zip(triples, (_cosine(qvec, v) for v in tvecs)),
+            key=lambda pair: pair[1],
+            reverse=True,
+        )
+        return [t for t, _ in scored[:keep]]
+    except Exception as exc:
+        logger.warning("Triple ranking failed, using unranked triples: %s", exc)
+        return triples[:keep]
+
+
+def _graph_context(question: str, hops: int, max_triples: int = 12) -> dict:
+    """Graph path: question -> entities -> resolved nodes -> ranked neighborhood triples."""
     candidates = _extract_question_entities(question)
     resolved = graph_store.find_entities(candidates)
     triples = graph_store.neighborhood_triples(resolved, hops=hops)
+    triples = _rank_triples(question, triples, keep=max_triples)
     return {"candidates": candidates, "resolved": resolved, "triples": triples}
 
 

@@ -5,29 +5,29 @@
       "parameters": {
         "options": {}
       },
-      "id": "c17f59b8-8bc7-44ee-930c-5a4990848275",
+      "id": "4801ab47-577a-41c0-b09a-d90c959fc271",
       "name": "When chat message received",
       "type": "@n8n/n8n-nodes-langchain.chatTrigger",
       "typeVersion": 1.1,
       "position": [
         16,
-        -64
+        16
       ],
       "webhookId": "a1b2c3d4-agent-chat-0001-000000000001"
     },
     {
       "parameters": {
         "options": {
-          "systemMessage": "You are a helpful assistant that answers questions and performs tasks using a knowledge base of ingested documents and videos. You have TWO tools:\n\n1. \"search_knowledge_base\" — search ingested documents and videos for relevant passages. Use this for ANY question about the CONTENT of documents or videos (what something says, explains, or shows). Each passage returns with a citation label (file name + page for PDFs, or timestamp for videos).\n\n2. \"get_meeting_minutes\" — generate Minutes of Meeting for a VIDEO, given the video's name. Use this ONLY when the user asks for minutes, meeting notes, or a summary OF A VIDEO. Input is the video name (e.g. \"noria\"). It returns the full minutes text — just relay it.\n\nIMPORTANT: If the user asks for minutes/notes/summary of a video, call \"get_meeting_minutes\" with the video name. Do NOT use search_knowledge_base for minutes requests. For content questions, use search_knowledge_base and answer ONLY from what it returns — do not use outside knowledge or make anything up. Cite sources with their labels, e.g. (The_Ultimate_Tracker_Sheet_GUIDE.pdf — p.2) or (sales_noria_erp.mp4 — 04:32). If a tool returns nothing relevant or an error, tell the user clearly. Keep answers concise."
+          "systemMessage": "You are a helpful assistant using a knowledge base of ingested documents and videos. You have TWO tools:\n\n1. \"search_knowledge_base\" — search ingested content for passages. Use for ANY question about what a document or video says/shows. Each passage returns a citation label (file + page for PDFs, or timestamp for videos).\n\n2. \"get_meeting_minutes\" — generate AND email the Minutes of Meeting for a VIDEO, given its name. Use ONLY when the user asks for minutes, notes, or a summary of a video. Input is the video name (e.g. \"noria\"). It emails the minutes and returns the minutes text — relay it to the user.\n\nFor minutes requests use get_meeting_minutes (NOT search). For content questions use search_knowledge_base and answer only from what it returns; cite sources like (sales_noria_erp.mp4 — 04:32). If a tool errors, tell the user plainly. Keep answers concise."
         }
       },
-      "id": "6078fa2f-9397-40fe-b7c0-7bf5c6b1d8a6",
+      "id": "5da8f8f0-e1d0-486a-89b0-f198e1139def",
       "name": "AI Agent",
       "type": "@n8n/n8n-nodes-langchain.agent",
       "typeVersion": 1.7,
       "position": [
-        320,
-        -64
+        304,
+        16
       ]
     },
     {
@@ -35,13 +35,13 @@
         "model": "gpt-oss:20b-cloud",
         "options": {}
       },
-      "id": "18fe0700-20c0-4563-9ad6-5de0aa94096a",
+      "id": "2684578a-a1c5-4c03-b6b4-c6e92274f623",
       "name": "Ollama Chat Model",
       "type": "@n8n/n8n-nodes-langchain.lmChatOllama",
       "typeVersion": 1,
       "position": [
-        192,
-        160
+        176,
+        240
       ],
       "credentials": {
         "ollamaApi": {
@@ -54,18 +54,167 @@
       "parameters": {
         "contextWindowLength": 10
       },
-      "id": "b81eae16-6c61-4b54-97f6-17a2fdf49e5f",
+      "id": "f616825d-185c-4618-87a2-0c21adc40e9c",
       "name": "Simple Memory",
       "type": "@n8n/n8n-nodes-langchain.memoryBufferWindow",
       "typeVersion": 1.3,
       "position": [
-        384,
-        160
+        336,
+        240
       ]
     },
     {
       "parameters": {
-        "path": "3e22f1e4-1eca-463d-82c7-80552c252dd7",
+        "mode": "retrieve-as-tool",
+        "toolDescription": "Search the knowledge base of ingested documents and videos. Use for ANY question about the content. Returns passages with file name and page or timestamp.",
+        "qdrantCollection": {
+          "__rl": true,
+          "value": "content_chunks",
+          "mode": "list",
+          "cachedResultName": "content_chunks"
+        },
+        "topK": 5,
+        "options": {
+          "contentPayloadKey": "text",
+          "metadataPayloadKey": "metadata"
+        }
+      },
+      "type": "@n8n/n8n-nodes-langchain.vectorStoreQdrant",
+      "typeVersion": 1.3,
+      "position": [
+        560,
+        224
+      ],
+      "id": "794769e0-95ce-470c-8ace-7b9b7a7a91bb",
+      "name": "Qdrant Vector Store",
+      "credentials": {
+        "qdrantApi": {
+          "id": "Cc9IN2kOrBgM9py4",
+          "name": "Qdrant account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "model": "nomic-embed-text:latest"
+      },
+      "type": "@n8n/n8n-nodes-langchain.embeddingsOllama",
+      "typeVersion": 1,
+      "position": [
+        688,
+        400
+      ],
+      "id": "4e5b50cc-76ba-49a3-a58a-cf7789a1ead2",
+      "name": "Embeddings Ollama",
+      "credentials": {
+        "ollamaApi": {
+          "id": "nGz2MNS2PSpO4Wr9",
+          "name": "Ollama account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "toolDescription": "Generate AND email Minutes of Meeting for an ingested video by name. Use when the user asks for minutes, notes, or a summary of a video. Input is the video name (e.g. 'noria'). Emails the minutes and returns the minutes text.",
+        "method": "POST",
+        "url": "http://host.docker.internal:5678/webhook/email-minutes",
+        "sendQuery": true,
+        "parametersQuery": {
+          "values": [
+            {
+              "name": "name"
+            }
+          ]
+        },
+        "placeholderDefinitions": {
+          "values": []
+        }
+      },
+      "id": "c0c6a5ad-962b-4939-a548-26193aa299c1",
+      "name": "get_meeting_minutes",
+      "type": "@n8n/n8n-nodes-langchain.toolHttpRequest",
+      "typeVersion": 1.1,
+      "position": [
+        464,
+        416
+      ]
+    },
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "email-minutes",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "id": "8cd953ec-e857-4cbb-aecd-a203eda99937",
+      "name": "Email Minutes Webhook",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [
+        0,
+        592
+      ],
+      "webhookId": "email-minutes-hook-000000000001"
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "=http://host.docker.internal:8000/minutes/by-name?name={{ $json.query.name }}",
+        "options": {
+          "timeout": 300000
+        }
+      },
+      "id": "e957e8db-45d5-4d4e-a6c0-0de0f9ff5245",
+      "name": "Minutes (for agent email)",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        240,
+        592
+      ]
+    },
+    {
+      "parameters": {
+        "sendTo": "jalalalarab566@gmail.com",
+        "subject": "=Minutes of Meeting - {{ $json.file_name }}",
+        "emailType": "text",
+        "message": "={{ $json.minutes }}",
+        "options": {}
+      },
+      "id": "f242b27d-dd4b-4b87-a268-b40683675764",
+      "name": "Email minutes (agent)",
+      "type": "n8n-nodes-base.gmail",
+      "typeVersion": 2.1,
+      "position": [
+        464,
+        592
+      ],
+      "webhookId": "agent-email-hook-000000000003",
+      "credentials": {
+        "gmailOAuth2": {
+          "id": "3dNiaMJpluBYHI1B",
+          "name": "Gmail account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ { \"response\": $('Minutes (for agent email)').item.json.minutes } }}",
+        "options": {}
+      },
+      "id": "932b550a-2c21-4083-9828-ce9128e150d0",
+      "name": "Respond to agent",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [
+        720,
+        592
+      ]
+    },
+    {
+      "parameters": {
+        "path": "a30d75ad-66df-49b2-bf15-632f3bff5d02",
         "formTitle": "Upload a Document or Video",
         "formDescription": "Upload a PDF or a video. PDFs are ingested; videos are ingested and their meeting minutes are emailed.",
         "formFields": {
@@ -80,15 +229,15 @@
         },
         "options": {}
       },
-      "id": "cca943c4-1ffe-478d-b04b-546c61bcdb65",
+      "id": "e3a5a579-04e2-4c91-80a9-9a2f2407ec95",
       "name": "On form submission",
       "type": "n8n-nodes-base.formTrigger",
       "typeVersion": 2.1,
       "position": [
-        -208,
-        576
+        16,
+        864
       ],
-      "webhookId": "3e22f1e4-1eca-463d-82c7-80552c252dd7"
+      "webhookId": "a30d75ad-66df-49b2-bf15-632f3bff5d02"
     },
     {
       "parameters": {
@@ -109,13 +258,13 @@
           "timeout": 300000
         }
       },
-      "id": "20cd6699-14cc-47eb-a6c8-009b3a5cd699",
+      "id": "2ecfec55-88b2-4311-ad31-2ee3a832268c",
       "name": "Ingest file",
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.2,
       "position": [
-        144,
-        576
+        240,
+        864
       ]
     },
     {
@@ -129,7 +278,7 @@
           },
           "conditions": [
             {
-              "id": "cond-is-video-0001",
+              "id": "c1",
               "leftValue": "={{ $json.source_type }}",
               "rightValue": "video",
               "operator": {
@@ -142,13 +291,13 @@
         },
         "options": {}
       },
-      "id": "dab7d934-c7b8-4c41-92c8-cde543e425d2",
+      "id": "31e77aa0-245b-4907-94b8-959fe17adfc0",
       "name": "Is it a video?",
       "type": "n8n-nodes-base.if",
       "typeVersion": 2,
       "position": [
-        416,
-        576
+        464,
+        864
       ]
     },
     {
@@ -159,13 +308,13 @@
           "timeout": 300000
         }
       },
-      "id": "772a1566-6866-47d4-af7b-759adf8298af",
+      "id": "3c3772c7-4690-49f4-8781-b74f715d1cea",
       "name": "Generate minutes",
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.2,
       "position": [
-        736,
-        560
+        704,
+        848
       ]
     },
     {
@@ -176,13 +325,13 @@
         "message": "={{ $json.minutes }}",
         "options": {}
       },
-      "id": "602945dd-9019-4d9c-b907-23eb894bf926",
+      "id": "e3948e08-0c55-4f67-9417-583bd2ec5b08",
       "name": "Email the minutes",
       "type": "n8n-nodes-base.gmail",
       "typeVersion": 2.1,
       "position": [
-        1088,
-        560
+        944,
+        848
       ],
       "webhookId": "72192733-7397-46bd-8d31-782c2829bb65",
       "credentials": {
@@ -191,82 +340,6 @@
           "name": "Gmail account"
         }
       }
-    },
-    {
-      "parameters": {
-        "mode": "retrieve-as-tool",
-        "toolDescription": "Search the knowledge base of ingested documents and videos. Use this for ANY question about the content. Returns relevant passages, each with a file name and page or timestamp.",
-        "qdrantCollection": {
-          "__rl": true,
-          "value": "content_chunks",
-          "mode": "list",
-          "cachedResultName": "content_chunks"
-        },
-        "topK": 5,
-        "options": {
-          "contentPayloadKey": "text",
-          "metadataPayloadKey": "metadata"
-        }
-      },
-      "type": "@n8n/n8n-nodes-langchain.vectorStoreQdrant",
-      "typeVersion": 1.3,
-      "position": [
-        672,
-        112
-      ],
-      "id": "ca0e52b7-238c-4beb-afcf-200af3dbf022",
-      "name": "Qdrant Vector Store",
-      "credentials": {
-        "qdrantApi": {
-          "id": "Cc9IN2kOrBgM9py4",
-          "name": "Qdrant account"
-        }
-      }
-    },
-    {
-      "parameters": {
-        "model": "nomic-embed-text:latest"
-      },
-      "type": "@n8n/n8n-nodes-langchain.embeddingsOllama",
-      "typeVersion": 1,
-      "position": [
-        800,
-        288
-      ],
-      "id": "ee853686-ec4a-4bf3-a676-fe823d8ca71a",
-      "name": "Embeddings Ollama",
-      "credentials": {
-        "ollamaApi": {
-          "id": "nGz2MNS2PSpO4Wr9",
-          "name": "Ollama account"
-        }
-      }
-    },
-    {
-      "parameters": {
-        "toolDescription": "Generate Minutes of Meeting for an ingested video, given the video's name. Use whenever the user asks for minutes, meeting notes, or a summary of a video. Input is the video name (e.g. 'noria'). Returns the full minutes text.",
-        "method": "POST",
-        "url": "http://host.docker.internal:8000/minutes/by-name",
-        "sendQuery": true,
-        "parametersQuery": {
-          "values": [
-            {
-              "name": "name"
-            }
-          ]
-        },
-        "placeholderDefinitions": {
-          "values": []
-        }
-      },
-      "id": "7fd6dc1f-189c-4bc6-b16c-92ca03d12545",
-      "name": "get_meeting_minutes",
-      "type": "@n8n/n8n-nodes-langchain.toolHttpRequest",
-      "typeVersion": 1.1,
-      "position": [
-        544,
-        352
-      ]
     }
   ],
   "pinData": {},
@@ -299,6 +372,72 @@
           {
             "node": "AI Agent",
             "type": "ai_memory",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Embeddings Ollama": {
+      "ai_embedding": [
+        [
+          {
+            "node": "Qdrant Vector Store",
+            "type": "ai_embedding",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Qdrant Vector Store": {
+      "ai_tool": [
+        [
+          {
+            "node": "AI Agent",
+            "type": "ai_tool",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "get_meeting_minutes": {
+      "ai_tool": [
+        [
+          {
+            "node": "AI Agent",
+            "type": "ai_tool",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Email Minutes Webhook": {
+      "main": [
+        [
+          {
+            "node": "Minutes (for agent email)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Minutes (for agent email)": {
+      "main": [
+        [
+          {
+            "node": "Email minutes (agent)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Email minutes (agent)": {
+      "main": [
+        [
+          {
+            "node": "Respond to agent",
+            "type": "main",
             "index": 0
           }
         ]
@@ -347,52 +486,19 @@
           }
         ]
       ]
-    },
-    "Embeddings Ollama": {
-      "ai_embedding": [
-        [
-          {
-            "node": "Qdrant Vector Store",
-            "type": "ai_embedding",
-            "index": 0
-          }
-        ]
-      ]
-    },
-    "Qdrant Vector Store": {
-      "ai_tool": [
-        [
-          {
-            "node": "AI Agent",
-            "type": "ai_tool",
-            "index": 0
-          }
-        ]
-      ]
-    },
-    "get_meeting_minutes": {
-      "ai_tool": [
-        [
-          {
-            "node": "AI Agent",
-            "type": "ai_tool",
-            "index": 0
-          }
-        ]
-      ]
     }
   },
-  "active": false,
+  "active": true,
   "settings": {
     "executionOrder": "v1",
     "binaryMode": "separate",
     "availableInMCP": false
   },
-  "versionId": "b5254672-d5e6-411b-84db-1575cf3f0734",
+  "versionId": "7d6c6251-9bfa-4acc-9a7e-c16b0f59450e",
   "meta": {
     "instanceId": "a4d12628703398b0ae4eb18b32a986a678a3b5f81cc35e43865091620e71d54a"
   },
   "nodeGroups": [],
-  "id": "38yX1tSky8k1YTEZ",
+  "id": "jfougli85PoMnNJV",
   "tags": []
 }

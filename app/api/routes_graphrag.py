@@ -52,3 +52,26 @@ async def graphrag_ask_endpoint(req: AskRequest) -> AskResponse:
         use_graph=req.use_graph,
     )
     return AskResponse(**result)
+
+
+@router.post("/ask-simple", response_model=AskResponse)
+async def graphrag_ask_simple_endpoint(
+    question: str,
+    top_k: int = 5,
+    hops: int = 2,
+    use_graph: bool = True,
+) -> AskResponse:
+    """
+    Query-param version of /ask — built for the n8n agent tool.
+
+    Same GraphRAG answer, but the question arrives as ?question=... instead of in
+    a JSON body, because n8n's HTTP Request Tool fills QUERY parameters reliably
+    ("By Model") while JSON-body placeholders proved fragile in this n8n version.
+    """
+    result = answer_question(
+        question,
+        top_k=top_k,
+        hops=hops,
+        use_graph=use_graph,
+    )
+    return AskResponse(**result)

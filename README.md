@@ -211,7 +211,6 @@ Exported workflow JSON lives in `n8n_workflows/`:
 
 - **Ingest webhook** (`ingest_webhook.json`) — POST a file to a webhook; routes to `/ingest/pdf` or `/ingest/video` by file type.
 - **Upload + Ingest + Agent** (`upload_ingest_minutes_agent_workflow.json`) — the main workflow. A form uploads a PDF/video -> ingest -> if it's a video, generate minutes and email them (Gmail). The **AI Agent** (Ollama chat model + windowed memory) has four tools: the **native Qdrant Vector Store** node for semantic search, plus HTTP tools for **GraphRAG** (`/graphrag/ask-simple`), **theme summaries** (`/graph/communities`), and **minutes-by-name** (`/minutes/by-name`, which emails via an internal webhook branch).
-- **AI Agent (standalone)** (`ai_agent_workflow.json`) — an earlier chat-only version, kept for reference.
 
 > **Note:** the agent was migrated from a custom `/agent/search` HTTP tool to the **native Qdrant Vector Store node**. That node is LangChain-based and reads a chunk's text from a configurable payload key (`Content Payload Key = text`) with metadata under a nested `metadata` key — so `qdrant_store` writes a nested `metadata` object (with a ready-made citation label) alongside the flat fields, keeping citations intact through the swap.
 

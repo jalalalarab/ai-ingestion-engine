@@ -9,13 +9,13 @@ from app.logging_config import setup_logging
 from app.api.routes_ingest import router as ingest_router
 from app.api.routes_search import router as search_router
 from app.api.routes_ask import router as ask_router
-from app.api.routes_agent import router as agent_router
 from app.api.routes_minutes import router as minutes_router
 from app.api.routes_documents import router as documents_router
 from app.api.routes_extract import router as extract_router
 from app.api.routes_graph import router as graph_router
 from app.api.routes_graphrag import router as graphrag_router
 from app.api.routes_communities import router as communities_router
+from app.api.routes_entity_resolution import router as entity_resolution_router
 
 # Configure logging FIRST, before any router code runs or logs. Anything
 # imported above/below can then use logging.getLogger(__name__) and it just
@@ -41,10 +41,10 @@ def health():
 app.include_router(ingest_router)
 app.include_router(search_router)
 app.include_router(ask_router)
-app.include_router(agent_router)
 app.include_router(minutes_router)
 app.include_router(documents_router)
 app.include_router(extract_router)
 app.include_router(graph_router)
 app.include_router(graphrag_router)
 app.include_router(communities_router)
+app.include_router(entity_resolution_router)

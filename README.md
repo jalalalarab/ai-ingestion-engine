@@ -4,6 +4,8 @@ A multimodal **RAG (Retrieval-Augmented Generation)** pipeline that turns messy 
 
 For videos it goes further: it **reads the slides** (vision model), **transcribes the speech** (Whisper), can generate **Minutes of Meeting** and email them, and answers questions through a conversational **AI Agent** (in n8n).
 
+It also builds a **knowledge graph** from what it ingests: an LLM extracts entities and relationships, they are loaded into **Neo4j**, and a **GraphRAG** retriever answers relationship questions by combining vector search with graph traversal. Densely-connected clusters are auto-detected (**GDS Louvain**) and summarized into high-level "community summaries."
+
 The focus of this project is the **ingestion engine**, not the chat: the pipeline that extracts, cleans, chunks, embeds, and stores content correctly. Good retrieval starts with good ingestion.
 
 ---
@@ -20,6 +22,9 @@ Upload a PDF or a video → the engine extracts the content → splits it into m
 | Video (audio) | Extract audio and **transcribe the speech** (Whisper) into timestamped segments | timestamp |
 | Question | Embed it, retrieve top chunks, answer from them only | source citations |
 | Meeting video | Pull the transcript back and generate **Minutes of Meeting** (map-reduce for long ones) | emailed via n8n |
+| Any ingested file | Extract **(subject, predicate, object) triples** and build a **Neo4j knowledge graph** | nodes + relationships |
+| Relationship question | Retrieve similar chunks **and** traverse the graph, merge both (**GraphRAG**) | passages + relationship chains |
+| Whole knowledge base | Detect communities (**GDS Louvain**) and summarize each cluster | "long documents" per theme |
 
 ---
 
@@ -51,8 +56,23 @@ PDF and video are handled by **different extractors** but flow into a **single s
           +-----------+---+----+-------------+
           v           v        v             v
        /search      /ask    /minutes    n8n AI Agent
-   (semantic top-k) (RAG)  (meeting     (chat -> /agent/search
-                            minutes)      -> cited answers)
+   (semantic top-k) (RAG)  (meeting     (chat: 4 tools ->
+                            minutes)      search / graph / themes / minutes)
+
+  --- knowledge graph layer (built from the same chunks) ---
+
+   transcript chunks --> LLM triple extraction (/extract)
+                              |
+                              v
+                      +---------------+
+                      |    Neo4j      |  entities (nodes) + relationships (edges)
+                      +------+--------+
+                             |
+              +--------------+----------------+
+              v                               v
+        GraphRAG (/graphrag/ask)        Communities (/graph/communities)
+   vector search + graph traversal      GDS Louvain -> LLM cluster summaries
+        merged -> grounded answer          ("long documents" per theme)
 ```
 
 **One-sentence version:** the system turns PDFs and videos into searchable chunks, stores them in Qdrant, and lets an LLM (or a chat agent) answer questions with page or timestamp sources — and can summarize meeting videos into emailed minutes.
@@ -65,6 +85,8 @@ PDF and video are handled by **different extractors** but flow into a **single s
 |---|---|---|
 | API | **FastAPI** (uvicorn) | Async, auto-generated Swagger docs at `/docs` |
 | Vector DB | **Qdrant** (Docker) | Semantic search + metadata filtering; `content_chunks`, 768-dim, cosine |
+| Graph DB | **Neo4j 5** + **GDS** (Docker) | Knowledge graph storage + **Louvain** community detection |
+| Extraction & GraphRAG LLM | **OpenAI** `gpt-4o-mini` | Triple extraction, community summaries, GraphRAG answers (strong at structured JSON + bilingual) |
 | Embeddings | **Ollama** local — `nomic-embed-text` | Runs locally, 768-dim, no API cost |
 | LLM (answers, minutes) | **Ollama Cloud** — `gpt-oss:20b-cloud` | Capable model without local GPU |
 | Transcription | **OpenAI Whisper** (`whisper-1`) | Accurate speech-to-text with timestamps |
@@ -91,7 +113,11 @@ cd ai-ingestion-engine
 # 2. Start Qdrant and n8n (Docker)
 docker run -d --name qdrant -p 6333:6333 -p 6334:6334 -v qdrant_storage:/qdrant/storage qdrant/qdrant:latest
 docker run -d --name n8n -p 5678:5678 -v n8n_data:/home/node/.n8n docker.n8n.io/n8nio/n8n:latest
-# daily use afterwards: docker start qdrant n8n
+# Neo4j with the Graph Data Science plugin (for community detection).
+# The plugin value is passed via an env-file to avoid shell-quoting issues:
+#   echo NEO4J_PLUGINS=["graph-data-science"] > neo4j.env
+docker run -d --name neo4j -p 7474:7474 -p 7687:7687 -e NEO4J_AUTH=neo4j/testpassword123 --env-file neo4j.env neo4j:5
+# daily use afterwards: docker start qdrant n8n neo4j
 
 # 3. Python environment
 python -m venv .venv
@@ -127,6 +153,15 @@ All settings are documented in **`.env.example`** — including `OPENAI_API_KEY`
 | `POST` | `/ask` | Full RAG: retrieve -> LLM -> answer + sources |
 | `POST` | `/agent/search` | Agent-friendly retrieval: cited chunk text for the n8n AI Agent |
 | `POST` | `/minutes/{file_id}` | Generate Minutes of Meeting from a video's transcript |
+| `POST` | `/minutes/by-name?name=` | Minutes by (partial) video name — one call, name in, minutes out |
+| `GET`  | `/documents?name=` | List ingested files (optional name filter) — resolve a name to its `file_id` |
+| `POST` | `/extract/{file_id}` | Extract (subject, predicate, object) triples from a file's transcript |
+| `POST` | `/graph/build/{file_id}` | Load a file's triples into Neo4j (nodes + relationships) |
+| `GET`  | `/graph/stats` | Node and relationship counts |
+| `POST` | `/graphrag/ask` | GraphRAG answer: vector search **+** graph traversal (JSON body) |
+| `POST` | `/graphrag/ask-simple?question=` | Same as `/graphrag/ask`, question as a query param (used by the n8n agent) |
+| `POST` | `/graph/communities?min_size=` | Detect communities (Louvain) and summarize each into a "long document" |
+| `POST` | `/graph/resolve-entities?apply=` | Propose (dry-run) or apply merges of duplicate entity nodes |
 
 **Example — ingest a video:**
 ```json
@@ -150,7 +185,17 @@ All settings are documented in **`.env.example`** — including `OPENAI_API_KEY`
 
 **Minutes of Meeting with map-reduce.** `/minutes/{file_id}` pulls a video's full transcript from Qdrant and produces structured minutes (Overview, Attendees, Key Points, Decisions, Action Items). Because a long meeting's transcript can exceed the LLM's **context window**, it uses **map-reduce**: if the transcript fits, one call; if not, summarize batches independently (*map*), then combine the partial summaries (*reduce*). Works for a 2-minute stand-up or a 2-hour meeting.
 
-**Conversational AI Agent (n8n).** A chat-triggered agent uses a custom tool that calls `/agent/search`, retrieving cited chunk text from Qdrant. It answers only from retrieved passages and cites file + page/timestamp. The retrieved chunk text is visible in n8n's execution log, so every answer is auditable. Windowed memory keeps recent turns for follow-ups without overflowing the context window.
+**Conversational AI Agent (n8n).** A chat-triggered agent picks between **four tools**: `search_knowledge_base` (semantic passage lookup), `ask_knowledge_graph` (GraphRAG for relationship questions), `get_theme_summaries` (community summaries for broad questions), and `get_meeting_minutes` (generate + email minutes by video name). It answers only from what the tools return and cites file + page/timestamp. Retrieved content is visible in n8n's execution log, so every answer is auditable. Windowed memory keeps recent turns without overflowing the context window.
+
+**Entity & relationship extraction.** `/extract/{file_id}` sends the transcript to `gpt-4o-mini` in **JSON mode** (guaranteed parseable output) and pulls **triples** — `(subject, predicate, object)`. The prompt enforces a controlled predicate vocabulary and Title-Case, full-name entities so the graph doesn't fragment into synonyms; a code-side canonical map is a deterministic backstop. Batched like minutes, then merged and de-duplicated across batches.
+
+**Knowledge graph (Neo4j).** `/graph/build/{file_id}` loads the triples into Neo4j: each entity is a `MERGE`d node (so the same entity across files collapses to one), each triple a relationship carrying its predicate and source `file_id` for provenance. Re-running clears that file's edges first, so a rebuild is clean rather than additive.
+
+**GraphRAG retrieval — vector *and* graph.** Plain RAG finds text *similar* to the question, which is weak for relationship questions ("what does X lead to?") whose answer is a chain spread across the graph. `/graphrag/ask` runs **two paths in parallel**: (1) vector search over Qdrant for descriptive passages; (2) an LLM extracts the entities the question mentions, resolves them to graph nodes, and traverses Neo4j for the surrounding relationship chains. Retrieved triples are **relevance-ranked** against the question (so a 2-hop neighbourhood doesn't flood the context), then both paths are merged into the LLM's context. On a relationship question this traces the real chain (`Proforma -> Size Order -> Delivery Out -> Sales Transaction`) that plain RAG misses — verifiable by toggling `use_graph`.
+
+**Community summaries ("long documents").** GraphRAG answers *local* questions well but not *global* ones ("what are the main themes?"). `/graph/communities` runs **GDS Louvain** to find densely-connected clusters, then summarizes each — grounded in both its triples **and** retrieved source passages, so a thin cluster can't be described from the model's general priors. These per-theme summaries are the high-level documents that answer whole-corpus questions.
+
+**Conservative entity resolution.** `/graph/resolve-entities` merges duplicate nodes, but the domain has near-identical names that are *different* things (`Size Order` vs `Sales Order`). So merges are **LLM-judged** (reasoning about meaning, not string similarity), explicitly warned that lookalike names are often distinct, and **dry-run by default** — it proposes merges for review before anything is changed, because a wrong merge is unrecoverable.
 
 **Semantic chunking.** The default chunker embeds every sentence, finds where the *meaning* shifts (cosine distance between neighbours), and splits at the biggest topic jumps — adapting per file rather than using a fixed threshold. Switchable via `CHUNKING_STRATEGY`. Sentence embeddings run concurrently to stay fast on CPU-only Ollama.
 
@@ -165,8 +210,10 @@ All settings are documented in **`.env.example`** — including `OPENAI_API_KEY`
 Exported workflow JSON lives in `n8n_workflows/`:
 
 - **Ingest webhook** (`ingest_webhook.json`) — POST a file to a webhook; routes to `/ingest/pdf` or `/ingest/video` by file type.
-- **AI Agent** (`ai_agent_workflow.json`) — chat trigger -> AI Agent (Ollama chat model + memory) -> HTTP tool calling `/agent/search`. Answers from Qdrant with citations.
-- **Upload + Minutes email** (`upload_ingest_minutes_workflow.json`) — a form to upload a PDF or video -> ingest -> if it's a video, generate minutes and email them via Gmail.
+- **Upload + Ingest + Agent** (`upload_ingest_minutes_agent_workflow.json`) — the main workflow. A form uploads a PDF/video -> ingest -> if it's a video, generate minutes and email them (Gmail). The **AI Agent** (Ollama chat model + windowed memory) has four tools: the **native Qdrant Vector Store** node for semantic search, plus HTTP tools for **GraphRAG** (`/graphrag/ask-simple`), **theme summaries** (`/graph/communities`), and **minutes-by-name** (`/minutes/by-name`, which emails via an internal webhook branch).
+- **AI Agent (standalone)** (`ai_agent_workflow.json`) — an earlier chat-only version, kept for reference.
+
+> **Note:** the agent was migrated from a custom `/agent/search` HTTP tool to the **native Qdrant Vector Store node**. That node is LangChain-based and reads a chunk's text from a configurable payload key (`Content Payload Key = text`) with metadata under a nested `metadata` key — so `qdrant_store` writes a nested `metadata` object (with a ready-made citation label) alongside the flat fields, keeping citations intact through the swap.
 
 n8n runs in Docker, so it reaches the host API via `host.docker.internal:8000` (not `localhost`).
 
@@ -178,16 +225,18 @@ n8n runs in Docker, so it reaches the host API via `host.docker.internal:8000` (
 app/
   main.py                  # FastAPI entry point
   config.py                # all config from .env, no hardcoded values
-  api/                     # routes_health, routes_ingest, routes_search,
-                           #   routes_ask, routes_agent, routes_minutes
-  services/                # ingestion_service, search_service, answer_service,
-                           #   minutes_service
+  api/                     # routes for ingest, search, ask, agent, minutes,
+                           #   documents, extract, graph, graphrag, communities,
+                           #   resolve-entities
+  services/                # ingestion, search, answer, minutes, extraction,
+                           #   graph, graphrag, community, entity_resolution
   parsers/                 # pdf_parser, ocr_parser, video_parser,
                            #   audio_extractor, vision_client
   transcription/           # transcription_client (Whisper)
   chunking/                # simple_chunker + semantic_chunker
+  extraction/              # entity_extractor (triples via gpt-4o-mini, JSON mode)
   embeddings/              # embedding_client
-  vector_store/            # qdrant_store  (the only module that talks to Qdrant)
+  vector_store/            # qdrant_store + graph_store (Qdrant / Neo4j gateways)
   llm/                     # llm_client
 n8n_workflows/             # exported workflow JSON
 storage/uploads/           # uploaded files (gitignored)
@@ -206,6 +255,10 @@ Honest about what an MVP this is:
 - **Minutes are generated on demand**, not stored back in Qdrant — so the agent answers from the raw transcript, not the polished minutes. Storing minutes as chunks is an easy future addition.
 - **Regex sentence splitting** in the semantic chunker can mis-handle abbreviations; a proper NLP tokenizer would be more robust.
 - **No auth on the API** — fine for local/demo; would add API keys before deployment.
+- **Cross-lingual retrieval** — `nomic-embed-text` is English-first. Measured: Arabic->Arabic retrieval is strong (~0.9), but an **English query against Arabic speech** retrieves weakly (the correct Arabic chunk can rank below unrelated content). Currently masked because vision-OCR indexes the English on-screen text. A 768-dim **multilingual** embedding model (e.g. `embeddinggemma`) in an aligned space fixes it; it's a re-embed of the existing chunks (no re-ingest), scoped but deferred.
+- **Entity-merge path is built but untested** — resolution correctly proposes *no* merges on the current clean graph, so the merge code itself hasn't executed on real duplicates yet.
+- **Community summaries can drift on tiny clusters** — mitigated by grounding in source passages and a `min_size` filter; a 2-node cluster still has little to describe.
+- **Graph tooling is lightweight, not a framework** — GraphRAG + communities are built directly on Neo4j/Qdrant rather than adopting Microsoft GraphRAG / LightRAG, to stay explainable and reuse the existing pipeline. A framework would add hierarchical communities and scale; a candidate upgrade.
 
 ---
 
@@ -217,3 +270,8 @@ Honest about what an MVP this is:
 - Practical **RAG guardrails** — confidence thresholds and prompt constraints — to stop confident-but-wrong answers.
 - **Adapting under constraints** — swapping a gated/heavy vision model for an available one without touching the rest of the pipeline (isolated client module).
 - Wiring **Docker networking** correctly (n8n reaching the host via `host.docker.internal`).
+- Building a **knowledge graph** from unstructured transcripts — triple extraction with a controlled vocabulary, and why entity **normalization** matters or the graph fragments.
+- **GraphRAG**: why relationship questions need graph traversal, not just vector similarity — and proving it with a `use_graph` on/off A/B on the same question.
+- **Community detection** (GDS Louvain) to turn a graph into thematic "long documents," and grounding those summaries in source text to stop hallucination on thin clusters.
+- **Measuring before optimizing** — testing cross-lingual retrieval directly (scores, not assumptions) before deciding whether a multilingual migration was worth the risk.
+- Designing **destructive operations to be safe** — dry-run-by-default entity merges, LLM-judged rather than similarity-judged, because a wrong merge is unrecoverable.

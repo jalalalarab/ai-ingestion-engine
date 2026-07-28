@@ -5,29 +5,29 @@
       "parameters": {
         "options": {}
       },
-      "id": "4801ab47-577a-41c0-b09a-d90c959fc271",
+      "id": "8a2acf1b-a861-48c6-9592-d66dd9e904b7",
       "name": "When chat message received",
       "type": "@n8n/n8n-nodes-langchain.chatTrigger",
       "typeVersion": 1.1,
       "position": [
-        16,
-        16
+        -416,
+        240
       ],
       "webhookId": "a1b2c3d4-agent-chat-0001-000000000001"
     },
     {
       "parameters": {
         "options": {
-          "systemMessage": "You are a helpful assistant using a knowledge base of ingested documents and videos. You have TWO tools:\n\n1. \"search_knowledge_base\" — search ingested content for passages. Use for ANY question about what a document or video says/shows. Each passage returns a citation label (file + page for PDFs, or timestamp for videos).\n\n2. \"get_meeting_minutes\" — generate AND email the Minutes of Meeting for a VIDEO, given its name. Use ONLY when the user asks for minutes, notes, or a summary of a video. Input is the video name (e.g. \"noria\"). It emails the minutes and returns the minutes text — relay it to the user.\n\nFor minutes requests use get_meeting_minutes (NOT search). For content questions use search_knowledge_base and answer only from what it returns; cite sources like (sales_noria_erp.mp4 — 04:32). If a tool errors, tell the user plainly. Keep answers concise."
+          "systemMessage": "You are a helpful assistant for a knowledge base of ingested documents and videos. You have FOUR tools — choose carefully:\n\n1. \"search_knowledge_base\" — for questions about WHAT a document or video SAYS, SHOWS, or EXPLAINS. Specific lookups and factual details. Returns passages with citation labels.\n\n2. \"ask_knowledge_graph\" — for questions about HOW SPECIFIC THINGS RELATE: \"what does X lead to\", \"what happens after Y\", \"how does A connect to B\", process flows, sequences, dependencies between named things.\n\n3. \"get_theme_summaries\" — for BROAD, GLOBAL questions about the knowledge base as a whole: \"what are the main themes\", \"what topics are covered\", \"give me an overview\", \"what is all this about\". Returns high-level summaries of each cluster of related concepts. Takes no input. Use this when the question is about the WHOLE body of knowledge rather than any specific entity or passage.\n\n4. \"get_meeting_minutes\" — ONLY when the user asks for minutes, meeting notes, or a summary OF A SPECIFIC VIDEO. Input is the video name (e.g. \"noria\").\n\nROUTING RULES:\n- Specific fact / what it says -> search_knowledge_base\n- How two specific things relate, or a process chain -> ask_knowledge_graph\n- Broad themes / overview of everything -> get_theme_summaries\n- Minutes of a named video -> get_meeting_minutes\nNever use minutes for a content question. Never use theme summaries for a specific factual lookup.\n\nAnswer only from what the tools return — no outside knowledge, no invention. Cite sources with their labels, e.g. (sales_noria_erp.mp4 — 04:32), when the tool provides them. If a tool returns nothing useful, say so plainly. Keep answers concise."
         }
       },
-      "id": "5da8f8f0-e1d0-486a-89b0-f198e1139def",
+      "id": "ade30e28-fb81-4fcc-ab4d-17d17ba3f5d3",
       "name": "AI Agent",
       "type": "@n8n/n8n-nodes-langchain.agent",
       "typeVersion": 1.7,
       "position": [
-        304,
-        16
+        -128,
+        240
       ]
     },
     {
@@ -35,13 +35,13 @@
         "model": "gpt-oss:20b-cloud",
         "options": {}
       },
-      "id": "2684578a-a1c5-4c03-b6b4-c6e92274f623",
+      "id": "a75d5d36-16d2-486b-a0c5-5db94091dd9b",
       "name": "Ollama Chat Model",
       "type": "@n8n/n8n-nodes-langchain.lmChatOllama",
       "typeVersion": 1,
       "position": [
-        176,
-        240
+        -256,
+        464
       ],
       "credentials": {
         "ollamaApi": {
@@ -54,13 +54,13 @@
       "parameters": {
         "contextWindowLength": 10
       },
-      "id": "f616825d-185c-4618-87a2-0c21adc40e9c",
+      "id": "496dcb62-ea4b-4387-9fa6-38569bf674d3",
       "name": "Simple Memory",
       "type": "@n8n/n8n-nodes-langchain.memoryBufferWindow",
       "typeVersion": 1.3,
       "position": [
-        336,
-        240
+        -96,
+        464
       ]
     },
     {
@@ -82,10 +82,10 @@
       "type": "@n8n/n8n-nodes-langchain.vectorStoreQdrant",
       "typeVersion": 1.3,
       "position": [
-        560,
-        224
+        384,
+        416
       ],
-      "id": "794769e0-95ce-470c-8ace-7b9b7a7a91bb",
+      "id": "69e36337-d665-4f6b-9921-7bfb0d88817b",
       "name": "Qdrant Vector Store",
       "credentials": {
         "qdrantApi": {
@@ -102,9 +102,9 @@
       "typeVersion": 1,
       "position": [
         688,
-        400
+        576
       ],
-      "id": "4e5b50cc-76ba-49a3-a58a-cf7789a1ead2",
+      "id": "35657b93-6a47-44cc-8120-08e61b7fdd18",
       "name": "Embeddings Ollama",
       "credentials": {
         "ollamaApi": {
@@ -130,13 +130,13 @@
           "values": []
         }
       },
-      "id": "c0c6a5ad-962b-4939-a548-26193aa299c1",
+      "id": "639261f6-7c03-4bb1-a05f-bce1abe73e9f",
       "name": "get_meeting_minutes",
       "type": "@n8n/n8n-nodes-langchain.toolHttpRequest",
       "typeVersion": 1.1,
       "position": [
-        464,
-        416
+        0,
+        624
       ]
     },
     {
@@ -146,13 +146,13 @@
         "responseMode": "responseNode",
         "options": {}
       },
-      "id": "8cd953ec-e857-4cbb-aecd-a203eda99937",
+      "id": "282ba4d7-b23d-4e90-93a2-bfebbe67ddfb",
       "name": "Email Minutes Webhook",
       "type": "n8n-nodes-base.webhook",
       "typeVersion": 2,
       "position": [
-        0,
-        592
+        -432,
+        816
       ],
       "webhookId": "email-minutes-hook-000000000001"
     },
@@ -164,13 +164,13 @@
           "timeout": 300000
         }
       },
-      "id": "e957e8db-45d5-4d4e-a6c0-0de0f9ff5245",
+      "id": "a57a6a2d-80fe-4abd-a05b-58e07aa07398",
       "name": "Minutes (for agent email)",
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.2,
       "position": [
-        240,
-        592
+        -192,
+        816
       ]
     },
     {
@@ -181,13 +181,13 @@
         "message": "={{ $json.minutes }}",
         "options": {}
       },
-      "id": "f242b27d-dd4b-4b87-a268-b40683675764",
+      "id": "ed2ea5ef-6eac-4d29-8c7d-6f4ca5355eef",
       "name": "Email minutes (agent)",
       "type": "n8n-nodes-base.gmail",
       "typeVersion": 2.1,
       "position": [
-        464,
-        592
+        32,
+        816
       ],
       "webhookId": "agent-email-hook-000000000003",
       "credentials": {
@@ -203,18 +203,18 @@
         "responseBody": "={{ { \"response\": $('Minutes (for agent email)').item.json.minutes } }}",
         "options": {}
       },
-      "id": "932b550a-2c21-4083-9828-ce9128e150d0",
+      "id": "053337e3-b547-429d-819e-62b2605abfd8",
       "name": "Respond to agent",
       "type": "n8n-nodes-base.respondToWebhook",
       "typeVersion": 1.1,
       "position": [
-        720,
-        592
+        288,
+        816
       ]
     },
     {
       "parameters": {
-        "path": "a30d75ad-66df-49b2-bf15-632f3bff5d02",
+        "path": "bd66f246-ea55-47e1-b6c7-3ea84dda233c",
         "formTitle": "Upload a Document or Video",
         "formDescription": "Upload a PDF or a video. PDFs are ingested; videos are ingested and their meeting minutes are emailed.",
         "formFields": {
@@ -229,15 +229,15 @@
         },
         "options": {}
       },
-      "id": "e3a5a579-04e2-4c91-80a9-9a2f2407ec95",
+      "id": "5a148a90-d368-4f4a-82d6-2a158115cd16",
       "name": "On form submission",
       "type": "n8n-nodes-base.formTrigger",
       "typeVersion": 2.1,
       "position": [
-        16,
-        864
+        -416,
+        1088
       ],
-      "webhookId": "a30d75ad-66df-49b2-bf15-632f3bff5d02"
+      "webhookId": "bd66f246-ea55-47e1-b6c7-3ea84dda233c"
     },
     {
       "parameters": {
@@ -258,13 +258,13 @@
           "timeout": 300000
         }
       },
-      "id": "2ecfec55-88b2-4311-ad31-2ee3a832268c",
+      "id": "ffe1a1cc-b499-4c35-8ff1-4a1f18f5e717",
       "name": "Ingest file",
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.2,
       "position": [
-        240,
-        864
+        -192,
+        1088
       ]
     },
     {
@@ -291,13 +291,13 @@
         },
         "options": {}
       },
-      "id": "31e77aa0-245b-4907-94b8-959fe17adfc0",
+      "id": "aa79108b-bd0a-43d3-a412-554eb702a8fe",
       "name": "Is it a video?",
       "type": "n8n-nodes-base.if",
       "typeVersion": 2,
       "position": [
-        464,
-        864
+        32,
+        1088
       ]
     },
     {
@@ -308,13 +308,13 @@
           "timeout": 300000
         }
       },
-      "id": "3c3772c7-4690-49f4-8781-b74f715d1cea",
+      "id": "a6f8d69b-3108-4e25-9f44-bca246b8835b",
       "name": "Generate minutes",
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.2,
       "position": [
-        704,
-        848
+        272,
+        1072
       ]
     },
     {
@@ -325,13 +325,13 @@
         "message": "={{ $json.minutes }}",
         "options": {}
       },
-      "id": "e3948e08-0c55-4f67-9417-583bd2ec5b08",
+      "id": "34e93ea8-3a3b-4fe1-96e2-1a3618ae0488",
       "name": "Email the minutes",
       "type": "n8n-nodes-base.gmail",
       "typeVersion": 2.1,
       "position": [
-        944,
-        848
+        512,
+        1072
       ],
       "webhookId": "72192733-7397-46bd-8d31-782c2829bb65",
       "credentials": {
@@ -340,6 +340,50 @@
           "name": "Gmail account"
         }
       }
+    },
+    {
+      "parameters": {
+        "toolDescription": "Answer questions about how things relate, connect, or flow — e.g. 'what does X lead to', 'what happens after Y', process/workflow questions, sequences, or how concepts depend on each other. Uses the knowledge graph plus document search. Input is the user's question.",
+        "method": "POST",
+        "url": "http://host.docker.internal:8000/graphrag/ask-simple",
+        "sendQuery": true,
+        "parametersQuery": {
+          "values": [
+            {
+              "name": "question"
+            }
+          ]
+        },
+        "placeholderDefinitions": {
+          "values": []
+        }
+      },
+      "id": "94816828-8770-45e5-b923-1d1a7268756f",
+      "name": "ask_knowledge_graph",
+      "type": "@n8n/n8n-nodes-langchain.toolHttpRequest",
+      "typeVersion": 1.1,
+      "position": [
+        160,
+        624
+      ]
+    },
+    {
+      "parameters": {
+        "toolDescription": "Get high-level summaries of the main themes in the knowledge base. Use for broad questions like 'what are the main themes', 'what topics are covered', 'give me an overview'. Returns one summary per cluster of related concepts. Takes no input.",
+        "method": "POST",
+        "url": "http://host.docker.internal:8000/graph/communities?min_size=3",
+        "placeholderDefinitions": {
+          "values": []
+        }
+      },
+      "id": "61c6cfd7-6f98-4fd0-93af-96201b0f345b",
+      "name": "get_theme_summaries",
+      "type": "@n8n/n8n-nodes-langchain.toolHttpRequest",
+      "typeVersion": 1.1,
+      "position": [
+        336,
+        608
+      ]
     }
   ],
   "pinData": {},
@@ -486,6 +530,28 @@
           }
         ]
       ]
+    },
+    "ask_knowledge_graph": {
+      "ai_tool": [
+        [
+          {
+            "node": "AI Agent",
+            "type": "ai_tool",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "get_theme_summaries": {
+      "ai_tool": [
+        [
+          {
+            "node": "AI Agent",
+            "type": "ai_tool",
+            "index": 0
+          }
+        ]
+      ]
     }
   },
   "active": true,
@@ -494,11 +560,11 @@
     "binaryMode": "separate",
     "availableInMCP": false
   },
-  "versionId": "7d6c6251-9bfa-4acc-9a7e-c16b0f59450e",
+  "versionId": "d24ebbaa-4c80-4f7c-97e6-8012cb1cabfe",
   "meta": {
     "instanceId": "a4d12628703398b0ae4eb18b32a986a678a3b5f81cc35e43865091620e71d54a"
   },
   "nodeGroups": [],
-  "id": "jfougli85PoMnNJV",
+  "id": "QPhL5jrwOMYwlVLa",
   "tags": []
 }

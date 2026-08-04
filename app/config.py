@@ -39,6 +39,8 @@ class Settings:
     # "simple" (fixed-size sliding window). Semantic gives better retrieval;
     # simple is the fast, dependency-free fallback.
     CHUNKING_STRATEGY: str = os.getenv("CHUNKING_STRATEGY", "semantic").lower()
+    VIDEO_INGEST_MODE: str = os.getenv("VIDEO_INGEST_MODE", "raw")
+    SYNTHESIS_WINDOW_CHARS: int = int(os.getenv("SYNTHESIS_WINDOW_CHARS", "2500"))
 
     # Upload limits
     MAX_PDF_MB: int = int(os.getenv("MAX_PDF_MB", "50"))

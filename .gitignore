@@ -31,3 +31,7 @@ n8n_data/
 # OS
 Thumbs.db
 .DS_Store
+# Video test files and generated documents (not source)
+*.mp4
+sales_noria_erp.mp4
+noria_document.md

@@ -27,14 +27,10 @@ Chunking strategy toggle:
   "semantic" (embedding-similarity splits) or "simple" (fixed-size window).
   Both PDF and video route through `_chunk`, so the choice is made in one place.
 
-Video ingestion mode toggle (synthesis re-architecture):
-  `ingest_video` dispatches on settings.VIDEO_INGEST_MODE:
-    "raw"       -> ingest_video_raw: store raw frame + transcript chunks (original).
-    "synthesis" -> ingest_video_synthesis: assemble ONE grounded Markdown document
-                   from the frames + transcript, then chunk/embed/store THAT
-                   document (raw chunks are not stored). The document is the
-                   "long document" describing the video.
-  The public name `ingest_video` stays stable so routes/n8n don't change.
+Video ingestion (synthesis):
+  `ingest_video` assembles the frames + transcript into ONE grounded Markdown
+  document (the "long document"), then chunks/embeds THAT document. Raw frame and
+  transcript chunks are not stored — the synthesized document is the sole index.
 """
 from dataclasses import dataclass
 
@@ -189,139 +185,34 @@ def ingest_pdf(pdf_bytes: bytes, file_name: str) -> IngestionReport:
 
 def ingest_video(video_path: str, file_name: str) -> VideoIngestionReport:
     """
-    Public entry point for video ingestion. Dispatches to the raw or synthesis
-    path based on settings.VIDEO_INGEST_MODE. Keeps the name stable so callers
-    (routes_ingest, n8n) don't change.
+    Video ingestion via multi-agent synthesis.
 
-      "synthesis" -> assemble a clean Markdown document, then index THAT.
-      anything else ("raw", default) -> the original raw-chunk behaviour.
-    """
-    if settings.VIDEO_INGEST_MODE == "synthesis":
-        return ingest_video_synthesis(video_path, file_name)
-    return ingest_video_raw(video_path, file_name)
+    Instead of storing raw frame + transcript chunks (the old approach, which
+    left a "moment" split across un-aligned chunks), this:
+      1. Extracts frames (vision descriptions) + transcript (Whisper).
+      2. Assembles them into ONE grounded Markdown document — the "long
+         document" narrating the whole video (windows -> synthesize -> stitch).
+      3. Chunks THAT document and embeds/stores it via the shared seam.
 
+    The synthesized document is the only thing indexed; raw frame/transcript
+    chunks are not stored. Document chunks carry no per-frame timestamp
+    (narrative prose), so video results cite the file, not a moment.
 
-def ingest_video_raw(video_path: str, file_name: str) -> VideoIngestionReport:
-    """
-    Full video ingestion pipeline (ORIGINAL raw-chunk path).
-
-    Steps:
-      1. Sample frames every couple of seconds, OCR each, drop blanks/duplicates.
-      2. Chunk each frame's text (attaching timestamp + frame number).
-      3. Embed all chunks in one batch.
-      4. Upsert to Qdrant with video metadata.
-    """
-    ensure_collection()
-
-    # Content-hash id from the file on disk (streamed, so we don't load the
-    # whole video into memory). Replaces the old random str(uuid4()).
-    file_id = _file_id_from_path(video_path)
-    logger.info("Video ingest (RAW) start: '%s' [file_id=%s] [chunker=%s]",
-                file_name, file_id[:8], settings.CHUNKING_STRATEGY)
-
-    # Step 1: extract frames -> list of (timestamp_seconds, frame_number, text)
-    frames = extract_video_frames(video_path)
-    logger.info("Extracted %d usable frames from '%s'", len(frames), file_name)
-
-    # Step 2: chunk each frame, tagging every chunk with timestamp + frame number.
-    all_chunks: list[str] = []
-    all_timestamps: list[int | None] = []
-    all_frame_numbers: list[int | None] = []
-    for timestamp_seconds, frame_number, frame_text in frames:
-        for chunk in _chunk(frame_text):
-            all_chunks.append(chunk)
-            all_timestamps.append(timestamp_seconds)
-            all_frame_numbers.append(frame_number)
-
-    # Step 2b: transcribe the spoken audio (if enabled and the video has audio).
-    # Each transcript segment becomes a chunk tagged with its start timestamp,
-    # exactly like a frame chunk — so spoken content is searchable and citable.
-    transcript_segment_count = 0
-    if settings.TRANSCRIBE_VIDEO and settings.OPENAI_API_KEY:
-        try:
-            audio_path = extract_audio(video_path)
-            if audio_path is None:
-                logger.info("No audio track in '%s' - skipping transcription", file_name)
-            else:
-                try:
-                    segments = transcribe_audio(audio_path)
-                    transcript_segment_count = len(segments)
-                    logger.info("Transcribed %d segments from '%s'",
-                                len(segments), file_name)
-                    for start_seconds, seg_text in segments:
-                        for chunk in _chunk(seg_text):
-                            all_chunks.append(chunk)
-                            all_timestamps.append(start_seconds)
-                            all_frame_numbers.append(None)  # transcript has no frame
-                finally:
-                    Path(audio_path).unlink(missing_ok=True)  # clean up temp mp3
-        except Exception as exc:  # transcription is best-effort; never fail ingest
-            logger.warning("Transcription failed for '%s': %s", file_name, exc)
-    elif settings.TRANSCRIBE_VIDEO and not settings.OPENAI_API_KEY:
-        logger.info("TRANSCRIBE_VIDEO is on but no OPENAI_API_KEY - skipping transcription")
-
-    # No readable frames -> nothing to embed.
-    if not all_chunks:
-        logger.warning("No readable text in '%s' - nothing to embed", file_name)
-        return VideoIngestionReport(
-            file_id=file_id,
-            file_name=file_name,
-            source_type="video",
-            frames_ingested=len(frames),
-            transcript_segments=transcript_segment_count,
-            chunks_created=0,
-        )
-
-    # Step 3 + 4: embed and upsert through the same shared seam as PDF.
-    n = _ingest_texts(
-        file_id=file_id,
-        file_name=file_name,
-        source_type="video",
-        chunks=all_chunks,
-        page_numbers=[None] * len(all_chunks),  # video has no pages
-        timestamps=all_timestamps,
-        frame_numbers=all_frame_numbers,
-    )
-
-    logger.info("Video ingest (RAW) done: '%s' -> %d chunks stored [file_id=%s]",
-                file_name, n, file_id[:8])
-    return VideoIngestionReport(
-        file_id=file_id,
-        file_name=file_name,
-        source_type="video",
-        frames_ingested=len(frames),
-        transcript_segments=transcript_segment_count,
-        chunks_created=n,
-    )
-
-
-def ingest_video_synthesis(video_path: str, file_name: str) -> VideoIngestionReport:
-    """
-    Synthesis-based video ingestion (Step 4).
-
-    Pipeline:
-      1. Extract frames + transcript (same extractors as the raw path).
-      2. Assemble them into ONE grounded Markdown document (window -> synthesize
-         -> stitch). This is the "long document" describing the video.
-      3. Chunk THAT document with the existing chunker.
-      4. Embed + store via the shared _ingest_texts seam.
-
-    Raw frame/transcript chunks are NOT stored — the document is the only thing
-    indexed (per the "stop storing raw chunks" decision). Document chunks carry
-    no per-frame timestamp (narrative prose); video results cite the file, not a
-    moment — consistent with the decision that timestamps don't matter.
+    Rate-limit safety lives upstream: VIDEO_SAMPLE_SECONDS controls how many
+    frames are described, and LLM_CALL_DELAY_SECONDS paces the vision + synthesis
+    calls so a long video doesn't exceed OpenAI's tokens-per-minute limit.
     """
     ensure_collection()
 
     file_id = _file_id_from_path(video_path)
-    logger.info("Video ingest (SYNTHESIS) start: '%s' [file_id=%s]",
+    logger.info("Video ingest (synthesis) start: '%s' [file_id=%s]",
                 file_name, file_id[:8])
 
-    # --- Step 1: frames -> (timestamp_seconds, frame_number, text) ---
+    # Step 1: frames -> (timestamp_seconds, frame_number, description)
     frames = extract_video_frames(video_path)
     logger.info("Extracted %d usable frames from '%s'", len(frames), file_name)
 
-    # --- Step 1b: transcript -> (start_seconds, text) ---
+    # Step 1b: transcript -> (start_seconds, text)
     transcript: list[tuple[int, str]] = []
     if settings.TRANSCRIBE_VIDEO and settings.OPENAI_API_KEY:
         try:
@@ -340,7 +231,7 @@ def ingest_video_synthesis(video_path: str, file_name: str) -> VideoIngestionRep
     elif settings.TRANSCRIBE_VIDEO and not settings.OPENAI_API_KEY:
         logger.info("TRANSCRIBE_VIDEO is on but no OPENAI_API_KEY - skipping transcription")
 
-    # --- Step 2: assemble the long document (windows -> synthesize -> stitch) ---
+    # Step 2: assemble the long document (windows -> synthesize -> stitch)
     assembly = assemble_document(
         file_name=file_name,
         frames=frames,
@@ -354,7 +245,7 @@ def ingest_video_synthesis(video_path: str, file_name: str) -> VideoIngestionRep
         assembly["char_count"],
     )
 
-    # --- Step 3: chunk the DOCUMENT (not raw frames/transcript) ---
+    # Step 3: chunk the DOCUMENT (not raw frames/transcript)
     doc_chunks = _chunk(document)
 
     if not doc_chunks:
@@ -368,7 +259,7 @@ def ingest_video_synthesis(video_path: str, file_name: str) -> VideoIngestionRep
             chunks_created=0,
         )
 
-    # --- Step 4: embed + store via the same shared seam as PDF/raw video ---
+    # Step 4: embed + store via the same shared seam as PDF.
     # Document chunks have no per-frame timestamp or frame number (narrative prose).
     n = _ingest_texts(
         file_id=file_id,
@@ -380,7 +271,7 @@ def ingest_video_synthesis(video_path: str, file_name: str) -> VideoIngestionRep
         frame_numbers=[None] * len(doc_chunks),
     )
 
-    logger.info("Video ingest (SYNTHESIS) done: '%s' -> %d document chunks stored [file_id=%s]",
+    logger.info("Video ingest (synthesis) done: '%s' -> %d document chunks stored [file_id=%s]",
                 file_name, n, file_id[:8])
     return VideoIngestionReport(
         file_id=file_id,

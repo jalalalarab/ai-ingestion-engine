@@ -2,9 +2,9 @@
 
 A multimodal **RAG (Retrieval-Augmented Generation)** pipeline that turns messy source files — PDFs and videos — into clean, searchable knowledge, then answers questions about them with **cited sources** (page numbers for PDFs, timestamps for videos).
 
-For videos it goes further: it **reads the slides** (vision model), **transcribes the speech** (Whisper), can generate **Minutes of Meeting** and email them, and answers questions through a conversational **AI Agent** (in n8n).
+For videos it goes further: it **reads the slides** (vision model) and **transcribes the speech** (Whisper), then a **multi-agent synthesis** step fuses both into one clean, human-readable Markdown document — the **"long document"** narrating the whole video. That document (not raw fragments) is what gets chunked, embedded, and graphed. It can also generate **Minutes of Meeting**, email them, and answer questions through a conversational **AI Agent** (in n8n).
 
-It also builds a **knowledge graph** from what it ingests: an LLM extracts entities and relationships, they are loaded into **Neo4j**, and a **GraphRAG** retriever answers relationship questions by combining vector search with graph traversal. Densely-connected clusters are auto-detected (**GDS Louvain**) and summarized into high-level "community summaries."
+It also builds a **knowledge graph** from what it ingests: an LLM extracts entities and relationships, they are loaded into **Neo4j**, and a **GraphRAG** retriever answers relationship questions by combining vector search with graph traversal. Densely-connected clusters are auto-detected (**GDS Louvain**) and summarized into high-level "community summaries." The graph can also be exported to an **Obsidian vault** — a folder of linked Markdown notes a human can read and edit, with edits importable back into the graph.
 
 The focus of this project is the **ingestion engine**, not the chat: the pipeline that extracts, cleans, chunks, embeds, and stores content correctly. Good retrieval starts with good ingestion.
 
@@ -18,13 +18,15 @@ Upload a PDF or a video → the engine extracts the content → splits it into m
 |---|---|---|
 | Normal PDF | Extract selectable text page by page | page number |
 | Scanned PDF | Render pages to images, run OCR | page number + `extraction_method` |
-| Video (frames) | Sample a frame every N seconds; a **vision model** reads on-screen text **and describes** the frame (OCR fallback); skip near-duplicates | timestamp + frame number |
-| Video (audio) | Extract audio and **transcribe the speech** (Whisper) into timestamped segments | timestamp |
+| Video (frames) | Sample a frame every N seconds; a **vision model** reads on-screen text **and describes** it (OCR fallback); skip near-duplicates | fed to synthesis |
+| Video (audio) | Extract audio and **transcribe the speech** (Whisper) into timestamped segments | fed to synthesis |
+| Video (synthesis) | **Fuse** the frames + transcript into one grounded **Markdown document** narrating the video (windows → synthesize → stitch), then chunk/embed **that** | document chunks |
 | Question | Embed it, retrieve top chunks, answer from them only | source citations |
 | Meeting video | Pull the transcript back and generate **Minutes of Meeting** (map-reduce for long ones) | emailed via n8n |
 | Any ingested file | Extract **(subject, predicate, object) triples** and build a **Neo4j knowledge graph** | nodes + relationships |
 | Relationship question | Retrieve similar chunks **and** traverse the graph, merge both (**GraphRAG**) | passages + relationship chains |
 | Whole knowledge base | Detect communities (**GDS Louvain**) and summarize each cluster | "long documents" per theme |
+| Knowledge graph | **Export to an Obsidian vault** (one Markdown note per entity, relationships as `[[links]]`); edits **import back** into the graph | human-editable `.md` notes |
 
 ---
 
@@ -59,9 +61,9 @@ PDF and video are handled by **different extractors** but flow into a **single s
    (semantic top-k) (RAG)  (meeting     (chat: 4 tools ->
                             minutes)      search / graph / themes / minutes)
 
-  --- knowledge graph layer (built from the same chunks) ---
+  --- knowledge graph layer (built from the document chunks) ---
 
-   transcript chunks --> LLM triple extraction (/extract)
+   document chunks --> LLM triple extraction (/extract)
                               |
                               v
                       +---------------+
@@ -73,6 +75,11 @@ PDF and video are handled by **different extractors** but flow into a **single s
         GraphRAG (/graphrag/ask)        Communities (/graph/communities)
    vector search + graph traversal      GDS Louvain -> LLM cluster summaries
         merged -> grounded answer          ("long documents" per theme)
+
+  --- human-editable layer ---
+   Neo4j graph  <-->  Obsidian vault (folder of linked Markdown notes)
+   export: one note per entity, relationships as [[links]]
+   import: edited notes parsed back into triples -> graph updated
 ```
 
 **One-sentence version:** the system turns PDFs and videos into searchable chunks, stores them in Qdrant, and lets an LLM (or a chat agent) answer questions with page or timestamp sources — and can summarize meeting videos into emailed minutes.
@@ -148,14 +155,13 @@ All settings are documented in **`.env.example`** — including `OPENAI_API_KEY`
 |---|---|---|
 | `GET` | `/health` | Liveness check |
 | `POST` | `/ingest/pdf` | Upload + ingest a PDF (OCR fallback for scans) |
-| `POST` | `/ingest/video` | Upload + ingest a video (vision frame description + audio transcript) |
+| `POST` | `/ingest/video` | Upload + ingest a video (frames + transcript → synthesized Markdown document → chunks) |
 | `POST` | `/search` | Semantic top-k retrieval |
 | `POST` | `/ask` | Full RAG: retrieve -> LLM -> answer + sources |
-| `POST` | `/agent/search` | Agent-friendly retrieval: cited chunk text for the n8n AI Agent |
 | `POST` | `/minutes/{file_id}` | Generate Minutes of Meeting from a video's transcript |
 | `POST` | `/minutes/by-name?name=` | Minutes by (partial) video name — one call, name in, minutes out |
 | `GET`  | `/documents?name=` | List ingested files (optional name filter) — resolve a name to its `file_id` |
-| `POST` | `/extract/{file_id}` | Extract (subject, predicate, object) triples from a file's transcript |
+| `POST` | `/extract/{file_id}` | Extract (subject, predicate, object) triples from a file's content |
 | `POST` | `/graph/build/{file_id}` | Load a file's triples into Neo4j (nodes + relationships) |
 | `GET`  | `/graph/stats` | Node and relationship counts |
 | `POST` | `/graphrag/ask` | GraphRAG answer: vector search **+** graph traversal (JSON body) |
@@ -205,6 +211,12 @@ All settings are documented in **`.env.example`** — including `OPENAI_API_KEY`
 
 ---
 
+**Video synthesis — the "long document."** Raw video ingestion has a flaw: frames (every N seconds) and transcript (Whisper segments) become *separate, un-aligned* chunks, so a single moment is split across streams and repetitive frame descriptions dilute the speech. Instead, video ingestion now **synthesizes**: the frames + transcript are split into time-ordered **windows** (each sized to fit the LLM's context), a single agent per window fuses "what was said" and "what was on screen" into grounded narrative, and the windows are stitched into **one Markdown document** describing the whole video. That document — coherent prose, not fragments — is what gets chunked, embedded, and graphed. Anti-hallucination is central: the agent describes only what's in the window and never invents. Files: `app/synthesis/{window_splitter,synthesis_agent,document_assembler}.py`.
+
+**Why synthesis produces a better graph.** Triple extraction on the coherent document yields a **much richer graph** than on raw fragments (on the test video: ~72 nodes / 73 relationships vs ~17 / 21 from raw chunks), because full sentences state relationships clearly that scattered Whisper segments don't. Rate-limit safety: `VIDEO_SAMPLE_SECONDS` controls how many frames are described and `LLM_CALL_DELAY_SECONDS` paces the vision + synthesis calls, so a long video stays under OpenAI's tokens-per-minute limit.
+
+**Obsidian layer — human-editable knowledge.** The Neo4j graph is fast for machines but a human can't open it to fix a wrong relationship. `obsidian_export.py` turns the graph into an **Obsidian vault**: one Markdown note per entity, each relationship a `[[wiki-link]]`. Opened in Obsidian, it renders the knowledge graph as editable notes. `obsidian_import.py` closes the loop — it parses edited notes back into triples and reloads the graph, so a human's corrections become the source of truth. This is what makes AI-extracted knowledge trustworthy enough to rely on: the AI drafts, a human verifies in plain Markdown.
+
 ## n8n workflows
 
 Exported workflow JSON lives in `n8n_workflows/`:
@@ -224,11 +236,13 @@ n8n runs in Docker, so it reaches the host API via `host.docker.internal:8000` (
 app/
   main.py                  # FastAPI entry point
   config.py                # all config from .env, no hardcoded values
-  api/                     # routes for ingest, search, ask, agent, minutes,
-                           #   documents, extract, graph, graphrag, communities,
+  api/                     # routes for ingest, search, ask, minutes, documents,
+                           #   extract, graph, graphrag, communities,
                            #   resolve-entities
   services/                # ingestion, search, answer, minutes, extraction,
                            #   graph, graphrag, community, entity_resolution
+  synthesis/               # window_splitter, synthesis_agent, document_assembler
+                           #   (video -> one grounded "long document")
   parsers/                 # pdf_parser, ocr_parser, video_parser,
                            #   audio_extractor, vision_client
   transcription/           # transcription_client (Whisper)
@@ -237,10 +251,13 @@ app/
   embeddings/              # embedding_client
   vector_store/            # qdrant_store + graph_store (Qdrant / Neo4j gateways)
   llm/                     # llm_client
+obsidian_export.py         # graph -> editable Obsidian vault (Markdown notes)
+obsidian_import.py         # edited vault -> triples -> graph (closes the loop)
+clear_video_chunks.py      # maintenance: wipe video chunks to re-ingest
+demo.py                    # end-to-end PDF walkthrough against a running server
 n8n_workflows/             # exported workflow JSON
 storage/uploads/           # uploaded files (gitignored)
-screenshots/               # proof-of-work evidence
-tests/                     # test artifacts + generators
+tests/                     # unit tests (synthesis) + test-data generators
 ```
 
 ---
@@ -254,6 +271,9 @@ Honest about what an MVP this is:
 - **Minutes are generated on demand**, not stored back in Qdrant — so the agent answers from the raw transcript, not the polished minutes. Storing minutes as chunks is an easy future addition.
 - **Regex sentence splitting** in the semantic chunker can mis-handle abbreviations; a proper NLP tokenizer would be more robust.
 - **No auth on the API** — fine for local/demo; would add API keys before deployment.
+- **Video synthesis re-runs vision every ingest** — describing frames + synthesizing windows is ~215 model calls for a 15-min video, paced to respect the rate limit (so ingestion takes a few minutes). Caching/reusing frame descriptions across re-ingests is a clear speed-up.
+- **Citation granularity for video dropped to document-level** — the synthesized document is narrative prose, so video answers cite the file, not a moment (`04:32`). A deliberate trade for coherence; timestamps could be woven back into the document if per-moment citation is needed.
+- **Obsidian import replaces a file's edges wholesale** — re-importing a vault rebuilds the graph from the notes, so it's the source of truth on import; concurrent edits from multiple sources aren't merged.
 - **Cross-lingual retrieval** — `nomic-embed-text` is English-first. Measured: Arabic->Arabic retrieval is strong (~0.9), but an **English query against Arabic speech** retrieves weakly (the correct Arabic chunk can rank below unrelated content). Currently masked because vision-OCR indexes the English on-screen text. A 768-dim **multilingual** embedding model (e.g. `embeddinggemma`) in an aligned space fixes it; it's a re-embed of the existing chunks (no re-ingest), scoped but deferred.
 - **Entity-merge path is built but untested** — resolution correctly proposes *no* merges on the current clean graph, so the merge code itself hasn't executed on real duplicates yet.
 - **Community summaries can drift on tiny clusters** — mitigated by grounding in source passages and a `min_size` filter; a 2-node cluster still has little to describe.
@@ -272,5 +292,8 @@ Honest about what an MVP this is:
 - Building a **knowledge graph** from unstructured transcripts — triple extraction with a controlled vocabulary, and why entity **normalization** matters or the graph fragments.
 - **GraphRAG**: why relationship questions need graph traversal, not just vector similarity — and proving it with a `use_graph` on/off A/B on the same question.
 - **Community detection** (GDS Louvain) to turn a graph into thematic "long documents," and grounding those summaries in source text to stop hallucination on thin clusters.
+- **Multi-agent synthesis** — turning two raw, un-aligned streams (frames + transcript) into one coherent document *before* indexing, and why that beats indexing raw fragments (cleaner search, a far richer graph).
+- **Designing against rate limits** — diagnosing a tokens-per-minute 429 storm and fixing it structurally (fewer frames + paced calls) rather than just retrying.
+- **Closing the human-in-the-loop** — exporting a machine graph to editable Markdown and importing edits back, so AI-extracted knowledge can be human-verified.
 - **Measuring before optimizing** — testing cross-lingual retrieval directly (scores, not assumptions) before deciding whether a multilingual migration was worth the risk.
 - Designing **destructive operations to be safe** — dry-run-by-default entity merges, LLM-judged rather than similarity-judged, because a wrong merge is unrecoverable.

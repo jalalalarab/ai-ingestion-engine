@@ -39,7 +39,6 @@ class Settings:
     # "simple" (fixed-size sliding window). Semantic gives better retrieval;
     # simple is the fast, dependency-free fallback.
     CHUNKING_STRATEGY: str = os.getenv("CHUNKING_STRATEGY", "semantic").lower()
-    VIDEO_INGEST_MODE: str = os.getenv("VIDEO_INGEST_MODE", "raw")
     SYNTHESIS_WINDOW_CHARS: int = int(os.getenv("SYNTHESIS_WINDOW_CHARS", "2500"))
     
 
@@ -48,8 +47,8 @@ class Settings:
 
     # Video ingestion — sample one frame every N seconds. 5s suits meeting/slide
     # videos (slides change slowly); lower it for fast-changing content.
-    VIDEO_SAMPLE_SECONDS: int = int(os.getenv("VIDEO_SAMPLE_SECONDS", "5"))
-    LLM_CALL_DELAY_SECONDS: float = float(os.getenv("LLM_CALL_DELAY_SECONDS", "0"))
+    VIDEO_SAMPLE_SECONDS: int = int(os.getenv("VIDEO_SAMPLE_SECONDS", "15"))
+    LLM_CALL_DELAY_SECONDS: float = float(os.getenv("LLM_CALL_DELAY_SECONDS", "0.4"))
 
     # Transcription (OpenAI Whisper) — turn a video's spoken audio into text.
     # OPENAI_API_KEY is a secret: keep it in .env, never in .env.example or git.

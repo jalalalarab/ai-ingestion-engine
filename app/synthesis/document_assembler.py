@@ -11,16 +11,19 @@ The output document is the "long document" — a clean, human-readable narrative
 the entire video, which downstream steps chunk, embed, and graph (replacing the
 old raw-chunk approach).
 
-Windows are synthesized SEQUENTIALLY in this version: simpler to debug, and it
-respects OpenAI rate limits (the real video hit 429s under bursty load).
-Parallelism is a later optimization if speed demands it.
+Windows are synthesized SEQUENTIALLY, with a small configurable pause between
+calls (settings.LLM_CALL_DELAY_SECONDS). Sequential + paced keeps the request
+rate under OpenAI's tokens-per-minute limit, so a long video doesn't 429-storm.
+Set the delay to 0 to disable pacing.
 
 The LLM client is injected so the whole assembly is unit-testable with a fake.
 """
 from __future__ import annotations
 
 import logging
+import time
 
+from app.config import settings
 from app.synthesis.window_splitter import split_into_windows
 from app.synthesis.synthesis_agent import synthesize_window
 
@@ -75,15 +78,21 @@ def assemble_document(
 
     sections: list[str] = [title]
     written = 0
+    # Small pause between synthesis calls to stay under the OpenAI TPM limit.
+    delay = getattr(settings, "LLM_CALL_DELAY_SECONDS", 0)
 
-    for window in windows:
+    for i, window in enumerate(windows):
         narrative = synthesize_window(window, client=client)
-        if not narrative.strip():
-            # A window with nothing to say contributes nothing — we do NOT invent
-            # filler to keep sections uniform.
-            continue
-        sections.append(narrative.strip())
-        written += 1
+        # Progress log so a long run isn't a silent black box.
+        logger.info("Assembler: window %d/%d synthesized (%d chars)",
+                    window.index + 1, len(windows), len(narrative))
+        if narrative.strip():
+            sections.append(narrative.strip())
+            written += 1
+        # Pace: pause after each call except the last. Skipped when a fake client
+        # is injected (tests) so the suite stays instant.
+        if delay and client is None and i < len(windows) - 1:
+            time.sleep(delay)
 
     logger.info(
         "Assembler: '%s' -> %d/%d windows written.",

@@ -2,12 +2,18 @@
 Video frame extractor — the EXTRACT stage for the video source type.
 
 Given a video file path, sample one frame every N seconds and turn each sampled
-frame into text. Primary path: a vision model (Qwen via Ollama Cloud) that reads
-on-screen text AND describes the frame's visuals. Fallback: Tesseract OCR (reads
-text only) if the vision call fails or is disabled — so ingestion never breaks.
+frame into text. Primary path: a vision model (gpt-4o-mini) that reads on-screen
+text AND describes the frame's visuals. Fallback: Tesseract OCR (reads text only)
+if the vision call fails or is disabled — so ingestion never breaks.
 
 Near-duplicate consecutive frames (a slide held on screen for several seconds)
 are skipped, so a slide shown for 10 seconds doesn't produce 10 identical chunks.
+
+Rate-limit safety: vision sends a full image per frame, which is token-heavy.
+On a long video that can burst past OpenAI's tokens-per-minute limit. Two guards:
+  - VIDEO_SAMPLE_SECONDS controls how many frames we sample (higher = fewer calls).
+  - LLM_CALL_DELAY_SECONDS adds a small pause between vision calls so the request
+    rate stays under the limit. Set to 0 to disable.
 
 This is the video analogue of pdf_parser.extract_pdf_pages: it hands the shared
 ingestion seam a list of (metadata, text) rows and knows nothing about chunking,
@@ -15,6 +21,7 @@ embedding, or Qdrant.
 """
 from difflib import SequenceMatcher
 import logging
+import time
 
 import cv2
 from PIL import Image
@@ -88,6 +95,10 @@ def extract_video_frames(video_path: str) -> list[tuple[int, int, str]]:
     # How many raw frames to skip between samples.
     frame_interval = max(1, int(round(fps * SAMPLE_EVERY_SECONDS)))
 
+    # Small pause between vision calls to stay under the OpenAI TPM limit.
+    # Only meaningful when vision is on (OCR is local and free).
+    delay = getattr(settings, "LLM_CALL_DELAY_SECONDS", 0) if settings.DESCRIBE_FRAMES else 0
+
     results: list[tuple[int, int, str]] = []
     last_kept_text = ""
     frame_idx = -1
@@ -105,6 +116,10 @@ def extract_video_frames(video_path: str) -> list[tuple[int, int, str]]:
         # Vision (primary) or OCR (fallback) — get text for this frame.
         text = _understand_frame(frame)
 
+        # Pace after each vision call so a long video doesn't burst the rate limit.
+        if delay:
+            time.sleep(delay)
+
         # Drop blank / low-content frames.
         if len(text) < OCR_MIN_CHARS:
             continue
@@ -120,4 +135,6 @@ def extract_video_frames(video_path: str) -> list[tuple[int, int, str]]:
         last_kept_text = text
 
     cap.release()
+    logger.info("Sampled %d usable frames from video (every %ds)",
+                len(results), SAMPLE_EVERY_SECONDS)
     return results

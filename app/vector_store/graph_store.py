@@ -279,3 +279,54 @@ def detect_communities() -> list[dict]:
         )
 
     return communities
+
+
+# ---- Entity resolution: merging duplicate nodes ----
+
+def list_entity_names() -> list[str]:
+    """Return every entity name currently in the graph."""
+    driver = get_driver()
+    with driver.session() as session:
+        rows = session.run("MATCH (e:Entity) RETURN e.name AS name ORDER BY e.name")
+        return [r["name"] for r in rows]
+
+
+def merge_entities(from_name: str, into_name: str) -> None:
+    """
+    Merge one entity node into another, preserving all its relationships.
+
+    Redirects every relationship touching `from_name` so it points at
+    `into_name` instead, then deletes the now-orphaned node. MERGE is used on the
+    redirected edges so an edge that already exists on the target isn't duplicated.
+
+    Destructive and not reversible — callers should confirm the pair first
+    (see the dry-run path in the resolution service).
+    """
+    if from_name == into_name:
+        return
+    driver = get_driver()
+    with driver.session() as session:
+        # Redirect outgoing edges: (from)-[r]->(x)  =>  (into)-[r]->(x)
+        session.run(
+            """
+            MATCH (f:Entity {name: $from})-[r:REL]->(x:Entity)
+            MATCH (t:Entity {name: $into})
+            WHERE x <> t
+            MERGE (t)-[nr:REL {predicate: r.predicate, file_id: r.file_id}]->(x)
+            SET nr.file_name = r.file_name
+            """,
+            {"from": from_name, "into": into_name},
+        )
+        # Redirect incoming edges: (y)-[r]->(from)  =>  (y)-[r]->(into)
+        session.run(
+            """
+            MATCH (y:Entity)-[r:REL]->(f:Entity {name: $from})
+            MATCH (t:Entity {name: $into})
+            WHERE y <> t
+            MERGE (y)-[nr:REL {predicate: r.predicate, file_id: r.file_id}]->(t)
+            SET nr.file_name = r.file_name
+            """,
+            {"from": from_name, "into": into_name},
+        )
+        # Remove the merged-away node and its now-redundant edges.
+        session.run("MATCH (f:Entity {name: $from}) DETACH DELETE f", {"from": from_name})
